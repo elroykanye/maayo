@@ -1,30 +1,26 @@
 # Getting Started
 
-This guide wires up an Angular frontend and a Spring Boot backend in about 5 minutes.
+Maayo solves one problem: your app needs to work offline and sync data when the network comes back. Writes land in a local IndexedDB outbox immediately; the sync engine drains that outbox to the server in the background. Reads come from the local database, kept fresh by pulling server deltas.
 
-## Prerequisites
+## What you need
 
-- Node 20+ with pnpm
-- Java 17+, Gradle
-- A running Postgres database (or use H2 for local dev)
+**Client**: `@maayo/client` + `@maayo/angular` (or your framework adapter)  
+**Server**: any backend that implements two HTTP endpoints — `POST /sync/mutations` and `GET /sync/changes`. No specific database required.
 
 ---
 
-## 1. Install packages
+## 1. Install
 
 ```bash
-pnpm add @maayo/client @maayo/angular
-pnpm add @maayo/protocol   # optional — TypeScript types only
+pnpm add @maayo/client @maayo/angular dexie
 ```
 
 ---
 
-## 2. Configure the Angular app
+## 2. Configure Angular
 
 ```typescript
 // app.config.ts
-import { ApplicationConfig } from '@angular/core';
-import { provideHttpClient } from '@angular/common/http';
 import { provideSync, channelsFromGrants } from '@maayo/angular';
 
 export const appConfig: ApplicationConfig = {
@@ -34,16 +30,15 @@ export const appConfig: ApplicationConfig = {
       baseUrl: 'https://api.example.com',
       dbName: 'myapp',
       tables: {
-        student: 'id, schoolId, name',  // Dexie index spec for your entities
+        student: 'id, schoolId, name',   // Dexie index spec per entity
       },
-      authHeaders: () => ({ Authorization: `Bearer ${localStorage.getItem('token')}` }),
+      authHeaders: () => ({ Authorization: `Bearer ${getToken()}` }),
       channels: (injector) => {
-        const auth = injector.get(AuthStore);   // your auth store
+        const auth = injector.get(AuthStore);
         return channelsFromGrants(auth.grants(), (g) => ({
           org: g.orgId,
           school: g.schoolId,
         }));
-        // → ['org:abc/school:xyz', ...]
       },
     }),
   ],
@@ -52,104 +47,97 @@ export const appConfig: ApplicationConfig = {
 
 ---
 
-## 3. Use sync data in a component
+## 3. Read data (signals, live)
 
 ```typescript
-// students.component.ts
-import { Component } from '@angular/core';
-import { syncCollection, injectSyncStatus } from '@maayo/angular';
-
-@Component({
-  selector: 'app-students',
-  template: `
-    <p>Status: {{ status() }}</p>
-    @for (s of students(); track s.id) {
-      <div>{{ s.name }}</div>
-    }
-  `,
-})
+@Component({ /* ... */ })
 export class StudentsComponent {
-  readonly students = syncCollection<Student>('student');
-  readonly status = injectSyncStatus();
+  readonly students = syncCollection<Student>('student');  // Signal<Student[]>
+  readonly status = injectSyncStatus();                    // Signal<SyncStatus>
 }
 ```
 
-`syncCollection` returns a `Signal<T[]>` that updates automatically as the local IndexedDB changes — no subscriptions, no manual refresh.
+`syncCollection` stays live — it updates automatically when a sync pull writes new data to IndexedDB.
 
 ---
 
-## 4. Enqueue a local write
+## 4. Write data
 
 ```typescript
-import { inject } from '@angular/core';
-import { SYNC_ENGINE } from '@maayo/angular';
-import { enqueue } from '@maayo/client';
-
-// inside a component / service
 const engine = inject(SYNC_ENGINE);
 
 await enqueue(engine.db, {
   channel: 'org:abc/school:xyz',
   entityType: 'Student',
-  entityId: '550e8400-e29b-41d4-a716-446655440000',
+  entityId: crypto.randomUUID(),
   op: 'CREATE',
-  payload: { id: '550e...', name: 'Ada Lovelace', updatedAt: new Date().toISOString() },
+  payload: { id: '...', name: 'Ada Lovelace', updatedAt: new Date().toISOString() },
   authorIdentityId: currentUserId,
 });
-// → queued in _outbox; synced to server on next push cycle
+// Queued locally. Synced to server on the next push cycle (within 10 s by default).
 ```
 
 ---
 
-## 5. Add the Spring Boot server
+## 5. Server — choose your database
+
+The server just needs to implement `MaayoRepository` (Kotlin/Spring) or the two endpoint contracts (any other backend). There is no required database.
+
+### Spring Boot — zero config with JPA
+
+If Spring Data JPA is already on your classpath, add the dependency and you're done:
 
 ```kotlin
-// build.gradle.kts
 implementation("dev.maayo:maayo-spring:0.1.0")
 ```
 
-```yaml
-# application.yml
-maayo:
-  enabled: true          # default — can omit
-  default-limit: 500     # mutations per GET /sync/changes page
+The JPA adapter auto-configures a `maayo_mutation` table. No YAML needed.
+
+### Spring Boot — bring your own store (MongoDB, DynamoDB, JDBC, …)
+
+```kotlin
+implementation("dev.maayo:maayo-spring:0.1.0")
 ```
 
-That's it. Two controllers are registered automatically:
-
-```
-POST /sync/mutations
-GET  /sync/changes
-```
-
-For production, replace the default `PermitAllChannelAuthorizer`:
+Implement `MaayoRepository` for your store and register it as a bean:
 
 ```kotlin
 @Component
-class MyChannelAuthorizer(private val authService: AuthService) : ChannelAuthorizer {
-    override fun canPush(principal: Principal?, channel: String) =
-        authService.hasWriteAccess(principal?.name, channel)
+class MongoMaayoRepository(private val mongo: MongoTemplate) : MaayoRepository {
 
-    override fun canPull(principal: Principal?, channel: String) =
-        authService.hasReadAccess(principal?.name, channel)
+    override fun existsById(id: String) =
+        mongo.exists(Query(Criteria.where("maayoId").`is`(id)), MaayoDocument::class.java)
+
+    override fun saveAll(mutations: List<Mutation>): List<SavedMutation> {
+        val now = Instant.now()
+        return mutations.map { m ->
+            val doc = MaayoDocument(maayoId = m.id, /* ... */ receivedAt = now)
+            mongo.save(doc)
+            SavedMutation(m, now)
+        }
+    }
+
+    override fun findChanges(channel: String, since: Instant?, limit: Int): List<SavedMutation> {
+        val criteria = Criteria.where("channel").regex("^${Regex.escape(channel)}(/.*)?$")
+        since?.let { criteria.and("receivedAt").gt(it) }
+        val query = Query(criteria).with(Sort.by("receivedAt")).limit(limit)
+        return mongo.find(query, MaayoDocument::class.java).map { it.toSaved() }
+    }
 }
 ```
+
+The two controllers (`POST /sync/mutations`, `GET /sync/changes`) register automatically once a `MaayoRepository` bean is present.
+
+### Any other backend
+
+Implement the [protocol spec](./protocol.md) directly — two endpoints, any language, any database.
 
 ---
 
 ## What happens at runtime
 
-1. `provideSync` starts `SyncEngine` via `APP_INITIALIZER`.
-2. Every 10 seconds (default): push queued outbox rows → pull deltas per channel.
-3. Local IndexedDB tables update → signals in your components re-render automatically.
-4. If the device goes offline, outbox rows accumulate locally and drain when connectivity returns.
-
----
-
-## Next steps
-
-- [Core Concepts](./concepts.md) — understand the outbox, channels, LWW, and cursors
-- [Protocol Specification](./protocol.md) — implement a custom backend
-- [`@maayo/client` API](./packages/client.md) — direct engine/outbox access
-- [`@maayo/angular` API](./packages/angular.md) — full Angular API reference
-- [`@maayo/spring` API](./packages/spring.md) — Spring Boot configuration reference
+1. `provideSync` starts `SyncEngine` on app init.
+2. Every 10 s: push queued outbox rows → pull deltas per channel.
+3. Pulled mutations apply to IndexedDB via LWW (`updatedAt` comparison).
+4. `syncCollection` signals re-emit → components re-render.
+5. Offline: writes queue in outbox, pulls are skipped. On reconnect, the next cycle catches up automatically.

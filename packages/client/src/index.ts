@@ -11,3 +11,5 @@ export { SyncEngine } from './engine';
 export type { SyncConfig, SyncStatus } from './engine';
 
 export { ulid, deviceId } from './ids';
+
+export { channelFor, channelsFromGrants } from './channel';

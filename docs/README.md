@@ -1,34 +1,41 @@
-# Maayo Docs
+# Maayo
 
-> *Maayo* (Fulfulde: "river") — offline-first data sync that flows naturally from local storage to any backend.
+> *Maayo* (Fulfulde: "river") — offline-first data sync between a local device store and any backend.
 
-Maayo is a **protocol-first, backend-agnostic** offline sync library. You implement two HTTP endpoints on your server; Maayo handles everything else: local storage, outbox queuing, conflict resolution, and framework bindings.
+Maayo is for applications that need to work without a network connection. Local writes are stored immediately in IndexedDB and synced to the server whenever connectivity is available. The server side is two HTTP endpoints — implement them on any backend with any database.
+
+**This is not a general-purpose data layer.** Maayo is specifically for the offline-first pull-sync pattern:
+
+- Client writes go to a local outbox first, then push to the server
+- Client reads come from local IndexedDB, kept fresh by pulling server deltas
+- The server stores mutations; it never pushes to clients
 
 ## Packages
 
 | Package | Description |
 |---------|-------------|
-| [`@maayo/protocol`](./packages/protocol.md) | TypeScript types for the sync protocol — zero deps |
-| [`@maayo/client`](./packages/client.md) | Core client: Dexie outbox, push/pull engine, ULID |
-| [`@maayo/angular`](./packages/angular.md) | Angular adapter: `provideSync()`, `syncCollection()`, signals |
-| [`@maayo/spring`](./packages/spring.md) | Spring Boot autoconfiguration for the server side |
+| [`@maayo/protocol`](./packages/protocol.md) | TypeScript types — zero deps |
+| [`@maayo/client`](./packages/client.md) | Core client: outbox, push/pull engine, ULID |
+| [`@maayo/angular`](./packages/angular.md) | Angular adapter: signals, DI wiring |
+| [`@maayo/react`](./packages/react.md) | React adapter: SyncProvider, hooks |
+| [`@maayo/spring`](./packages/spring.md) | Spring Boot server adapter |
 
 ## Guides
 
-- [Getting Started](./getting-started.md) — up and running in 5 minutes
-- [Core Concepts](./concepts.md) — outbox, channels, LWW, cursors
-- [Protocol Specification](./protocol.md) — the two endpoints you need to implement
+- [Getting Started](./getting-started.md)
+- [Core Concepts](./concepts.md)
+- [Protocol Specification](./protocol.md)
 
-## How it works
+## Flow
 
 ```
-Client (browser)                       Server
-─────────────────                      ────────────────────────
-local write → _outbox
-                    ─── POST /sync/mutations ──→  persist + ack
-                    ←── GET  /sync/changes   ───  deltas since cursor
-apply to local DB ←
+Browser                                  Server (any DB)
+───────────────────────────────────      ─────────────────────
+write → _outbox (IndexedDB)
+              ──── POST /sync/mutations ──→  store mutation
+              ←─── GET  /sync/changes   ────  deltas since cursor
+apply to local tables ←
 update cursor ←
 ```
 
-The client runs a push–pull loop every 10 seconds (configurable). Push drains the outbox; pull fetches server deltas. Both are independent — a failed push never blocks a pull.
+Push and pull are independent loops. A device can be offline for days, queue hundreds of writes, and sync cleanly when it reconnects.

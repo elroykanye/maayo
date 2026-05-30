@@ -21,7 +21,8 @@
     "paths": {
       "@maayo/protocol": ["packages/protocol/src/index.ts"],
       "@maayo/client": ["packages/client/src/index.ts"],
-      "@maayo/angular": ["packages/angular/src/index.ts"]
+      "@maayo/angular": ["packages/angular/src/index.ts"],
+      "@maayo/react": ["packages/react/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"]

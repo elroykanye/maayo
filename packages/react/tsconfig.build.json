@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declarationMap": false,
+    "paths": {
+      "@maayo/protocol": ["../protocol/dist/index.d.ts"],
+      "@maayo/client": ["../client/dist/index.d.ts"]
+    }
+  },
+  "exclude": ["src/**/*.spec.ts", "src/**/*.spec.tsx"]
+}
