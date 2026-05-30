@@ -18,7 +18,7 @@ jobs:
           version: latest
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install
@@ -42,7 +42,7 @@ jobs:
           java-version: 17
           distribution: temurin
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew publish
+      - run: chmod +x gradlew && ./gradlew publish
         working-directory: packages/spring
     env:
       GITHUB_ACTOR: ${{ github.actor }}
