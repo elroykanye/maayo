@@ -1,0 +1,32 @@
+{
+  "name": "@maayo/client",
+  "version": "0.1.0",
+  "description": "Offline-first sync client — Dexie outbox, push/pull engine, LWW conflict resolution",
+  "keywords": ["offline-first", "sync", "dexie", "indexeddb"],
+  "license": "MIT",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@maayo/protocol": "workspace:*",
+    "dexie": "^4.0.10"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3",
+    "vitest": "^4.0.9",
+    "@vitest/coverage-v8": "^4.0.9"
+  }
+}
