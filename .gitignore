@@ -4,4 +4,20 @@ dist
 .nx/workspace-data
 coverage
 *.tsbuildinfo
+
+# OS
 .DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
+
+# Env / secrets
+.env
+.env.*
+
+# Misc
+*.log
+tmp/

@@ -1,0 +1,11 @@
+build/
+.gradle/
+out/
+
+# IDE
+.idea/
+*.iml
+
+# Misc
+local.properties
+*.log
