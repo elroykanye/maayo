@@ -1,7 +1,7 @@
 {
   "name": "@maayo/react",
-  "version": "0.1.0",
-  "description": "React adapter for Maayo — SyncProvider, useCollection, useSyncStatus",
+  "version": "0.1.1",
+  "description": "React adapter for Maayo \u00e2\u20ac\u201d SyncProvider, useCollection, useSyncStatus",
   "keywords": [
     "offline-first",
     "sync",
@@ -43,7 +43,8 @@
     "react-dom": "^19.1.0",
     "typescript": "~5.8.3",
     "vitest": "^4.0.9"
+  },
+  "publishConfig": {
+    "access": "public"
   }
-,
-  "publishConfig": { "access": "public" }
 }

@@ -1,7 +1,7 @@
 {
   "name": "@maayo/client",
-  "version": "0.1.0",
-  "description": "Offline-first sync client — Dexie outbox, push/pull engine, LWW conflict resolution",
+  "version": "0.1.1",
+  "description": "Offline-first sync client \u00e2\u20ac\u201d Dexie outbox, push/pull engine, LWW conflict resolution",
   "keywords": [
     "offline-first",
     "sync",
@@ -36,7 +36,8 @@
     "fake-indexeddb": "^6.2.5",
     "typescript": "~5.8.3",
     "vitest": "^4.0.9"
+  },
+  "publishConfig": {
+    "access": "public"
   }
-,
-  "publishConfig": { "access": "public" }
 }

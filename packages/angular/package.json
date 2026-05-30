@@ -1,7 +1,7 @@
 {
   "name": "@maayo/angular",
-  "version": "0.1.0",
-  "description": "Angular adapter for Maayo — provideSync(), syncCollection() signal primitive",
+  "version": "0.1.1",
+  "description": "Angular adapter for Maayo \u00e2\u20ac\u201d provideSync(), syncCollection() signal primitive",
   "keywords": [
     "offline-first",
     "sync",
@@ -39,7 +39,8 @@
     "dexie": "^4.4.3",
     "typescript": "~5.8.3",
     "vitest": "^4.0.9"
+  },
+  "publishConfig": {
+    "access": "public"
   }
-,
-  "publishConfig": { "access": "public" }
 }

@@ -1,8 +1,12 @@
 {
   "name": "@maayo/protocol",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Protocol types for the Maayo offline sync protocol",
-  "keywords": ["offline-first", "sync", "protocol"],
+  "keywords": [
+    "offline-first",
+    "sync",
+    "protocol"
+  ],
   "license": "MIT",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -14,14 +18,17 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "typescript": "~5.8.3"
+  },
+  "publishConfig": {
+    "access": "public"
   }
-,
-  "publishConfig": { "access": "public" }
 }
