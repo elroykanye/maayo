@@ -11,9 +11,6 @@
     "build:client": "nx build @maayo/client",
     "typecheck": "nx run-many -t typecheck"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": ["nx"]
-  },
   "devDependencies": {
     "@angular/core": "21.2.9",
     "@nx/js": "^22.7.5",
