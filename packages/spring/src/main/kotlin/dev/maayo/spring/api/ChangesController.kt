@@ -4,11 +4,11 @@ import dev.maayo.spring.ChannelAuthorizer
 import dev.maayo.spring.MaayoProperties
 import dev.maayo.spring.MaayoRepository
 import dev.maayo.spring.SavedMutation
+import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
-import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
 import java.security.Principal
 import java.time.Instant
@@ -32,7 +32,6 @@ class ChangesController(
         }
 
         val effectiveLimit = (limit ?: properties.defaultLimit).coerceIn(1, 2000)
-        // Fetch one extra to detect hasMore without a separate count query
         val sinceInstant = since?.let { runCatching { Instant.parse(it) }.getOrNull() }
         val rows = repository.findChanges(channel, sinceInstant, effectiveLimit + 1)
 

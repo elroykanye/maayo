@@ -1,7 +1,9 @@
 packages:
   - 'packages/*'
   - 'apps/*'
-allowBuilds:
-  nx: set this to true or false
+
 onlyBuiltDependencies:
   - nx
+
+allowBuilds:
+  nx: true

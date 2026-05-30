@@ -1,4 +1,4 @@
-package dev.maayo.spring
+package dev.maayo.spring.test
 
 import org.springframework.boot.autoconfigure.SpringBootApplication
 

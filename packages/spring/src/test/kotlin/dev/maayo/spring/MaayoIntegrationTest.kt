@@ -5,6 +5,7 @@ import dev.maayo.spring.api.BatchMutationsRequest
 import dev.maayo.spring.api.BatchMutationsResponse
 import dev.maayo.spring.api.ChangesResponse
 import dev.maayo.spring.api.Mutation
+import dev.maayo.spring.test.TestApplication
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
