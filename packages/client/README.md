@@ -1,10 +1,15 @@
 # @maayo/client
 
-Framework-agnostic offline-first sync engine for the Maayo protocol.
+[![npm version](https://img.shields.io/npm/v/@maayo/client?style=flat-square)](https://www.npmjs.com/package/@maayo/client)
+[![npm downloads](https://img.shields.io/npm/dm/@maayo/client?style=flat-square)](https://www.npmjs.com/package/@maayo/client)
+[![CI](https://github.com/elroykanye/maayo/actions/workflows/ci.yml/badge.svg)](https://github.com/elroykanye/maayo/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](https://github.com/elroykanye/maayo/blob/main/LICENSE)
 
-Writes go into a local IndexedDB outbox and are pushed to your server when connectivity is available. Server-side changes are pulled and merged locally using last-write-wins (LWW) conflict resolution.
+Framework-agnostic offline-first sync engine for the [Maayo](https://github.com/elroykanye/maayo) protocol.
 
-Works in any browser environment: React, Angular, Vue, Svelte, vanilla JS, Next.js, Nuxt, and more.
+Writes go into a local IndexedDB outbox immediately — your UI updates instantly, even offline. When connectivity returns, the engine pushes queued mutations to your server and pulls back any server-side changes. Conflict resolution uses last-write-wins (LWW) on `updatedAt`.
+
+Works in React, Angular, Vue, Svelte, Next.js, Nuxt, or vanilla JS.
 
 ## Install
 
@@ -23,28 +28,13 @@ const engine = new SyncEngine({
   channels: ['org:abc/school:xyz'],
   tables: {
     students: 'id, name, classId',
-    classes: 'id, name',
+    classes:  'id, name',
   },
   authHeaders: () => ({ Authorization: `Bearer ${getToken()}` }),
-  intervalMs: 10_000,
+  intervalMs: 10_000,  // sync every 10s, default
 });
 
 engine.start();
-
-// Queue a write (goes to IndexedDB outbox, synced on next cycle)
-await engine.db.table('_outbox').add({
-  id: ulid(),
-  channel: 'org:abc/school:xyz',
-  entityType: 'Student',
-  entityId: 'stu-001',
-  op: 'CREATE',
-  payload: JSON.stringify({ id: 'stu-001', name: 'Ada Lovelace' }),
-  authorIdentityId: userId,
-  deviceId: deviceId,
-  clientTs: new Date().toISOString(),
-  parentIds: [],
-  syncedAt: null,
-});
 ```
 
 ## API
@@ -53,32 +43,45 @@ await engine.db.table('_outbox').add({
 
 | Member | Description |
 |--------|-------------|
-| `new SyncEngine(config)` | Create engine (opens IndexedDB) |
+| `new SyncEngine(config)` | Opens IndexedDB, does not start syncing yet |
 | `engine.start()` | Begin periodic sync loop |
-| `engine.stop()` | Stop sync loop |
-| `engine.sync()` | Run one push+pull cycle manually |
+| `engine.stop()` | Stop sync loop (safe to call multiple times) |
+| `engine.sync()` | Run one push + pull cycle manually |
 | `engine.status` | `'idle' \| 'syncing' \| 'error' \| 'offline'` |
 | `engine.onStatusChange(fn)` | Subscribe to status changes, returns unsubscribe fn |
-| `engine.db` | The underlying Dexie database instance |
+| `engine.db` | Underlying Dexie instance — use for direct table access |
 
-### `channelFor(scope)` / `channelsFromGrants(grants, toScope)`
+### `SyncConfig`
 
-Helpers for building hierarchical channel strings:
+| Option | Type | Description |
+|--------|------|-------------|
+| `baseUrl` | `string` | Backend base URL, no trailing slash |
+| `dbName` | `string` | IndexedDB database name |
+| `channels` | `string[]` | Channels this client pulls from |
+| `tables` | `UserTableSchema` | Extra Dexie table definitions for your entities |
+| `authHeaders` | `() => Record<string, string>` | Called before each request |
+| `intervalMs` | `number` | Sync interval in ms, default `10_000` |
+
+### Channel helpers
 
 ```ts
 import { channelFor, channelsFromGrants } from '@maayo/client';
 
-channelFor({ org: 'abc', school: 'xyz' }); // → 'org:abc/school:xyz'
+channelFor({ org: 'abc', school: 'xyz' });
+// → 'org:abc/school:xyz'
+
+channelsFromGrants(userGrants, g => ({ org: g.orgId, school: g.schoolId }));
+// → ['org:abc/school:s1', 'org:abc/school:s2']
 ```
 
 ## Framework adapters
 
 | Framework | Package |
 |-----------|---------|
-| React / Next.js | [@maayo/react](https://www.npmjs.com/package/@maayo/react) |
-| Angular | [@maayo/angular](https://www.npmjs.com/package/@maayo/angular) |
-| Vue / Nuxt | Use `@maayo/client` directly (Vue adapter coming soon) |
+| React 18+ / Next.js | [![npm](https://img.shields.io/npm/v/@maayo/react?style=flat-square)](https://www.npmjs.com/package/@maayo/react) [`@maayo/react`](https://www.npmjs.com/package/@maayo/react) |
+| Angular 17+ | [![npm](https://img.shields.io/npm/v/@maayo/angular?style=flat-square)](https://www.npmjs.com/package/@maayo/angular) [`@maayo/angular`](https://www.npmjs.com/package/@maayo/angular) |
+| Vue / Nuxt / Svelte | Use `@maayo/client` directly |
 
 ## Server
 
-Any backend can implement the two sync endpoints. Official adapter: [@maayo/spring](https://github.com/elroykanye/maayo/packages/spring) for Spring Boot. Any language works — see the [protocol spec](https://github.com/elroykanye/maayo/blob/main/docs/protocol.md).
+Implement `POST /sync/mutations` and `GET /sync/changes` in any language. See the [protocol spec](https://github.com/elroykanye/maayo/blob/main/docs/protocol.md). Official Spring Boot adapter: [GitHub Packages](https://github.com/elroykanye/maayo/packages).

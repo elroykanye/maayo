@@ -1,8 +1,13 @@
 # @maayo/react
 
-React adapter for Maayo — offline-first sync with hooks.
+[![npm version](https://img.shields.io/npm/v/@maayo/react?style=flat-square)](https://www.npmjs.com/package/@maayo/react)
+[![npm downloads](https://img.shields.io/npm/dm/@maayo/react?style=flat-square)](https://www.npmjs.com/package/@maayo/react)
+[![CI](https://github.com/elroykanye/maayo/actions/workflows/ci.yml/badge.svg)](https://github.com/elroykanye/maayo/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](https://github.com/elroykanye/maayo/blob/main/LICENSE)
 
-Works with React 18+, Next.js (App Router and Pages), and any React-based framework. Uses `SyncProvider` to boot the engine and `useCollection` / `useSyncStatus` hooks to bind live IndexedDB data to components.
+React adapter for [Maayo](https://github.com/elroykanye/maayo) — offline-first sync with `SyncProvider` and hooks.
+
+Works with React 18+, **Next.js** (App Router and Pages Router), and any React-based framework.
 
 ## Install
 
@@ -12,22 +17,25 @@ npm install @maayo/react @maayo/client dexie
 
 ## Quick start
 
-### 1. Wrap your app (or layout) with `SyncProvider`
+### 1. Wrap your app with `SyncProvider`
 
 ```tsx
-// app/layout.tsx (Next.js App Router) or index.tsx
-'use client'; // Next.js only
+// Next.js App Router — app/layout.tsx
+'use client';
 
 import { SyncProvider } from '@maayo/react';
 
-export default function RootLayout({ children }) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <SyncProvider
       config={{
-        baseUrl: 'https://api.example.com',
+        baseUrl: process.env.NEXT_PUBLIC_API_URL!,
         dbName: 'myapp',
         channels: ['org:abc/school:xyz'],
-        tables: { students: 'id, name', classes: 'id, name' },
+        tables: {
+          students: 'id, name, classId',
+          classes:  'id, name',
+        },
         authHeaders: () => ({ Authorization: `Bearer ${getToken()}` }),
       }}
     >
@@ -37,41 +45,49 @@ export default function RootLayout({ children }) {
 }
 ```
 
-### 2. Use data in any component
+### 2. Read live data in components
 
 ```tsx
-'use client'; // Next.js only
+'use client';
 
 import { useCollection, useSyncStatus } from '@maayo/react';
 
-interface Student { id: string; name: string }
+interface Student { id: string; name: string; classId: string }
 
 export function StudentList() {
   const students = useCollection<Student>('students');
   const status = useSyncStatus();
 
   return (
-    <div>
-      <p>Sync: {status}</p>
+    <>
+      <p>Status: {status}</p>
       {students.map(s => <div key={s.id}>{s.name}</div>)}
-    </div>
+    </>
   );
 }
 ```
 
 ## API
 
-| Hook / Component | Description |
-|-----------------|-------------|
-| `<SyncProvider config={...}>` | Boots the sync engine, provides it via context |
-| `useCollection<T>(tableName)` | Live array of all rows in a table, re-renders on change |
-| `useSyncStatus()` | Current sync status: `'idle' \| 'syncing' \| 'error' \| 'offline'` |
-| `useSyncEngine()` | Access the raw `SyncEngine` instance |
+| Export | Description |
+|--------|-------------|
+| `<SyncProvider config={...}>` | Boots the engine, makes it available via context |
+| `useCollection<T>(tableName)` | Live array from IndexedDB — re-renders on every change |
+| `useSyncStatus()` | `'idle' \| 'syncing' \| 'error' \| 'offline'` |
+| `useSyncEngine()` | Raw `SyncEngine` instance for advanced use |
 
 ## Next.js notes
 
-All hooks use browser APIs (IndexedDB, `navigator.onLine`). Mark any component that uses them with `'use client'`. The `SyncProvider` itself also needs `'use client'`.
+All hooks use browser APIs (IndexedDB, `navigator.onLine`). In the App Router, add `'use client'` to every component that calls a Maayo hook, including the layout that renders `<SyncProvider>`.
 
-## Server setup
+## Server
 
-Any backend implementing `POST /sync/mutations` and `GET /sync/changes`. Official adapters: [Spring Boot](https://github.com/elroykanye/maayo/packages/spring). See the [protocol spec](https://github.com/elroykanye/maayo/blob/main/docs/protocol.md) to implement in any language.
+Any backend can be the server. Official adapters:
+- **Spring Boot** — [GitHub Packages](https://github.com/elroykanye/maayo/packages) (`dev.maayo:maayo-spring`)
+
+Any language works — see the [protocol spec](https://github.com/elroykanye/maayo/blob/main/docs/protocol.md).
+
+## Related
+
+- [`@maayo/client`](https://www.npmjs.com/package/@maayo/client) — core engine (framework-agnostic)
+- [`@maayo/angular`](https://www.npmjs.com/package/@maayo/angular) — Angular signals adapter
