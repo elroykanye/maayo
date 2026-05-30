@@ -30,11 +30,11 @@ export class MaayoDatabase extends Dexie {
   }
 }
 
-let _db: MaayoDatabase | null = null;
+const _registry = new Map<string, MaayoDatabase>();
 
 export function openDatabase(name: string, userTables?: UserTableSchema): MaayoDatabase {
-  if (!_db) {
-    _db = new MaayoDatabase(name, userTables);
+  if (!_registry.has(name)) {
+    _registry.set(name, new MaayoDatabase(name, userTables));
   }
-  return _db;
+  return _registry.get(name)!;
 }

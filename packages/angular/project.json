@@ -1,0 +1,33 @@
+{
+  "name": "@maayo/angular",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/angular/src",
+  "projectType": "library",
+  "tags": ["scope:angular", "type:lib"],
+  "implicitDependencies": ["@maayo/client"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["^build"],
+      "options": {
+        "command": "tsc -p tsconfig.build.json",
+        "cwd": "packages/angular"
+      },
+      "outputs": ["{projectRoot}/dist"]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run",
+        "cwd": "packages/angular"
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit",
+        "cwd": "packages/angular"
+      }
+    }
+  }
+}

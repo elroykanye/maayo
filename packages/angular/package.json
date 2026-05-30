@@ -1,12 +1,12 @@
 {
-  "name": "@maayo/client",
+  "name": "@maayo/angular",
   "version": "0.1.0",
-  "description": "Offline-first sync client — Dexie outbox, push/pull engine, LWW conflict resolution",
+  "description": "Angular adapter for Maayo — provideSync(), syncCollection() signal primitive",
   "keywords": [
     "offline-first",
     "sync",
-    "dexie",
-    "indexeddb"
+    "angular",
+    "signals"
   ],
   "license": "MIT",
   "main": "./dist/index.cjs",
@@ -28,12 +28,15 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@maayo/protocol": "workspace:*",
-    "dexie": "^4.0.10"
+    "@maayo/client": "workspace:*",
+    "@maayo/protocol": "workspace:*"
+  },
+  "peerDependencies": {
+    "@angular/core": ">=17.0.0",
+    "rxjs": ">=7.0.0"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.0.9",
-    "fake-indexeddb": "^6.2.5",
+    "dexie": "^4.4.3",
     "typescript": "~5.8.3",
     "vitest": "^4.0.9"
   }
