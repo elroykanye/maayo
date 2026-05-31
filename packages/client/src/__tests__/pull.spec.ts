@@ -28,7 +28,7 @@ beforeEach(() => {
 describe('applyMutations via pull()', () => {
   async function callPull(mutations: ReturnType<typeof makeMutation>[]) {
     const { pull } = await import('../pull');
-    global.fetch = vi.fn().mockResolvedValue({
+    (globalThis as Record<string, unknown>).fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
         channel: 'org:1',

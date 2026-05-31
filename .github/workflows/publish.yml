@@ -6,6 +6,25 @@ on:
       - 'v*'
 
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      spring: ${{ steps.check.outputs.spring }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check spring changes since previous tag
+        id: check
+        run: |
+          PREV=$(git tag --sort=-version:refname | grep -E '^v[0-9]' | sed -n '2p')
+          if [ -z "$PREV" ]; then
+            echo "spring=true" >> "$GITHUB_OUTPUT"
+          else
+            CHANGED=$(git diff --name-only "$PREV" HEAD -- packages/spring)
+            echo "spring=$( [ -n "$CHANGED" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+          fi
+
   publish-npm:
     runs-on: ubuntu-latest
     permissions:
@@ -33,6 +52,8 @@ jobs:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-spring:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.spring == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
