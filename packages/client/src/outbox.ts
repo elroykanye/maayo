@@ -38,6 +38,21 @@ export async function pending(db: MaayoDatabase): Promise<OutboxRow[]> {
 
 export async function markSynced(db: MaayoDatabase, ids: string[], receivedAt: string): Promise<void> {
   await db._outbox.where('id').anyOf(ids).modify({ syncedAt: receivedAt });
+  const rows = await db._outbox.where('id').anyOf(ids).toArray();
+  await db._history.bulkPut(
+    rows.map((r) => ({
+      id: r.id,
+      entityType: r.entityType,
+      entityId: r.entityId,
+      op: r.op,
+      payload: r.payload,
+      authorIdentityId: r.authorIdentityId,
+      deviceId: r.deviceId,
+      clientTs: r.clientTs,
+      receivedAt,
+      source: 'local' as const,
+    })),
+  );
 }
 
 /** Deletes outbox rows that have been synced. Safe to call periodically for cleanup. */

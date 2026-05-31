@@ -1,0 +1,24 @@
+{
+  "name": "@maayo/express",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/express/src",
+  "projectType": "library",
+  "tags": ["scope:express", "type:lib"],
+  "implicitDependencies": ["@maayo/protocol"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["^build"],
+      "options": { "command": "tsc -p tsconfig.build.json", "cwd": "packages/express" },
+      "outputs": ["{projectRoot}/dist"]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": { "command": "vitest run", "cwd": "packages/express" }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": { "command": "tsc --noEmit", "cwd": "packages/express" }
+    }
+  }
+}

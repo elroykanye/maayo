@@ -1,5 +1,5 @@
 export { openDatabase } from './database';
-export type { MaayoDatabase, OutboxRow, CursorRow, UserTableSchema } from './database';
+export type { MaayoDatabase, OutboxRow, CursorRow, HistoryRow, MigrationDef, UserTableSchema } from './database';
 
 export { enqueue, pending, markSynced, purgeSynced } from './outbox';
 export type { EnqueueOptions } from './outbox';

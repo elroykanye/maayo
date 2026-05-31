@@ -28,6 +28,7 @@ jobs:
       - run: pnpm --filter @maayo/angular publish --access public --no-git-checks
       - run: pnpm --filter @maayo/react publish --access public --no-git-checks
       - run: pnpm --filter @maayo/nest publish --access public --no-git-checks
+      - run: pnpm --filter @maayo/express publish --access public --no-git-checks
     env:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

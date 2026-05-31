@@ -7,3 +7,4 @@ onlyBuiltDependencies:
 
 allowBuilds:
   nx: true
+  "@nestjs/core": true

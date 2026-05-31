@@ -45,6 +45,7 @@ export async function pull(
 async function applyMutations(db: MaayoDatabase, mutations: Mutation[]): Promise<ApplyResult> {
   let applied = 0;
   let skipped = 0;
+  const receivedAt = new Date().toISOString();
 
   for (const mutation of mutations) {
     const table = db.table(mutation.entityType);
@@ -52,20 +53,31 @@ async function applyMutations(db: MaayoDatabase, mutations: Mutation[]): Promise
 
     if (mutation.op === 'DELETE') {
       await table.delete(mutation.entityId);
-      applied++;
-      continue;
+    } else {
+      const incoming = JSON.parse(mutation.payload) as Record<string, unknown>;
+      const existing = await table.get(mutation.entityId) as Record<string, unknown> | undefined;
+
+      if (existing) {
+        const existingTs = String(existing['updatedAt'] ?? '');
+        const incomingTs = String(incoming['updatedAt'] ?? mutation.clientTs);
+        if (existingTs >= incomingTs) { skipped++; continue; } // LWW: local is newer
+      }
+
+      await table.put(incoming);
     }
 
-    const incoming = JSON.parse(mutation.payload) as Record<string, unknown>;
-    const existing = await table.get(mutation.entityId) as Record<string, unknown> | undefined;
-
-    if (existing) {
-      const existingTs = String(existing['updatedAt'] ?? '');
-      const incomingTs = String(incoming['updatedAt'] ?? mutation.clientTs);
-      if (existingTs >= incomingTs) { skipped++; continue; } // LWW: local is newer
-    }
-
-    await table.put(incoming);
+    await db._history.put({
+      id: mutation.id,
+      entityType: mutation.entityType,
+      entityId: mutation.entityId,
+      op: mutation.op,
+      payload: mutation.payload,
+      authorIdentityId: mutation.authorIdentityId,
+      deviceId: mutation.deviceId,
+      clientTs: mutation.clientTs,
+      receivedAt,
+      source: 'remote',
+    });
     applied++;
   }
 

@@ -1,5 +1,5 @@
 import type { BatchMutationsResponse } from '@maayo/protocol';
-import type { MaayoDatabase, UserTableSchema } from './database';
+import type { MaayoDatabase, UserTableSchema, MigrationDef, HistoryRow } from './database';
 import { openDatabase } from './database';
 import { pending, markSynced, purgeSynced } from './outbox';
 import { pull } from './pull';
@@ -14,6 +14,8 @@ export interface SyncConfig {
   channels: string[];
   /** Extra IndexedDB table schemas for user data */
   tables?: UserTableSchema;
+  /** Data and schema migrations to run when the local DB version bumps */
+  migrations?: MigrationDef[];
   /** Bearer token or other auth header factory — called before each request */
   authHeaders?: () => Record<string, string> | Promise<Record<string, string>>;
   /** Push + pull interval in ms, default 10_000 */
@@ -31,7 +33,7 @@ export class SyncEngine {
   private _started = false;
 
   constructor(private readonly config: SyncConfig) {
-    this.db = openDatabase(config.dbName, config.tables);
+    this.db = openDatabase(config.dbName, config.tables, config.migrations);
     this._coordinator = new TabCoordinator(config.dbName);
   }
 
@@ -67,6 +69,14 @@ export class SyncEngine {
     }
     this._coordinator.release();
     this._started = false;
+  }
+
+  /** Returns all recorded mutations for a record, oldest first. */
+  async history(entityType: string, entityId: string): Promise<HistoryRow[]> {
+    return this.db._history
+      .where('[entityType+entityId]')
+      .equals([entityType, entityId])
+      .sortBy('clientTs');
   }
 
   async sync(): Promise<void> {
