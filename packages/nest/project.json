@@ -1,0 +1,33 @@
+{
+  "name": "@maayo/nest",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/nest/src",
+  "projectType": "library",
+  "tags": ["scope:nest", "type:lib"],
+  "implicitDependencies": ["@maayo/protocol"],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["^build"],
+      "options": {
+        "command": "tsc -p tsconfig.build.json",
+        "cwd": "packages/nest"
+      },
+      "outputs": ["{projectRoot}/dist"]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run",
+        "cwd": "packages/nest"
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit",
+        "cwd": "packages/nest"
+      }
+    }
+  }
+}
