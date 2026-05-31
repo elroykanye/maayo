@@ -114,6 +114,7 @@ Any backend language works — see the [protocol spec](docs/protocol.md).
 - [Getting Started](docs/getting-started.md)
 - [Core Concepts](docs/concepts.md)
 - [Protocol Specification](docs/protocol.md)
+- [Architecture & Roadmap](docs/architecture.md)
 
 ## License
 

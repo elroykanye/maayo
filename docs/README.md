@@ -25,6 +25,7 @@ Maayo is for applications that need to work without a network connection. Local 
 - [Getting Started](./getting-started.md)
 - [Core Concepts](./concepts.md)
 - [Protocol Specification](./protocol.md)
+- [Architecture & Roadmap](./architecture.md)
 
 ## Flow
 

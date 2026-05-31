@@ -131,35 +131,30 @@ maayo/
 │   │       ├── use-channel.ts    — channel derivation hook
 │   │       └── index.ts
 │   │
-│   ├── react/             @maayo/react   (later milestone)
+│   ├── react/             @maayo/react
 │   │   └── src/
-│   │       ├── use-sync.ts       — useSync(config)
+│   │       ├── SyncProvider.tsx  — context + engine boot
 │   │       ├── use-collection.ts — useCollection<T>(table) → T[]
+│   │       ├── use-sync-status.ts
 │   │       └── index.ts
 │   │
-│   ├── spring/            @maayo/spring
+│   ├── spring/            dev.maayo:maayo-spring
 │   │   └── src/main/
 │   │       ├── MutationController.kt  — POST /sync/mutations
 │   │       ├── ChangesController.kt   — GET /sync/changes
 │   │       ├── MaayoAutoConfiguration.kt
 │   │       └── MaayoProperties.kt
 │   │
-│   ├── nest/              @maayo/nest    (later milestone)
-│   │   └── src/
-│   │       ├── mutations.controller.ts
-│   │       ├── changes.controller.ts
-│   │       └── maayo.module.ts
-│   │
-│   └── express/           @maayo/express  (later milestone)
-│       └── src/
-│           ├── mutations.ts
-│           ├── changes.ts
-│           └── router.ts
+│   ├── nest/              @maayo/nest    (planned v0.2)
+│   └── express/           @maayo/express (planned v0.2)
 │
-├── apps/
-│   └── docs/              maayo.dev — documentation site
+├── docs/
+│   ├── architecture.md    (this file)
+│   ├── protocol.md
+│   ├── concepts.md
+│   ├── getting-started.md
+│   └── packages/
 │
-├── ARCHITECTURE.md        (this file)
 ├── pnpm-workspace.yaml
 └── package.json
 ```
@@ -173,8 +168,6 @@ maayo/
 // app.config.ts
 export const appConfig: ApplicationConfig = {
   providers: [
-    provideHttpClient(),
-    provideStore(),          // your Dexie store
     provideSync({
       baseUrl: 'https://api.example.com',
       channels: (auth) => channelsFromGrants(auth.grants),
@@ -192,13 +185,7 @@ readonly students = syncCollection<Student>('student');
 ### Server setup (Spring Boot)
 ```kotlin
 // build.gradle.kts
-implementation("dev.maayo:maayo-spring:1.0.0")
-```
-```yaml
-# application.yml
-maayo:
-  enabled: true
-  channel-authorizer: grantBased   # or custom bean
+implementation("dev.maayo:maayo-spring:0.1.2")
 ```
 Two controllers wired automatically. Done.
 
@@ -208,42 +195,13 @@ Two controllers wired automatically. Done.
 
 | Concern | Choice | Why |
 |---------|--------|-----|
-| Monorepo | pnpm workspaces + Nx | Same stack as Transkript-fe |
+| Monorepo | pnpm workspaces + Nx | Standard |
 | Client language | TypeScript | Universal |
 | Client storage | Dexie 4 | IndexedDB, excellent TypeScript support |
-| Spring adapter | Kotlin + Spring Boot 3 | Matches Transkript-be |
-| NestJS adapter | TypeScript | Matches NestJS ecosystem |
-| Docs | Astro or VitePress | Fast static site |
+| Spring adapter | Kotlin + Spring Boot 3 | JVM ecosystem |
+| Docs | Markdown in `docs/` | Zero build, lives in the repo |
 | CI | GitHub Actions | Standard |
-| Registry | npm (`@maayo/`) | Public scoped packages |
-
----
-
-## Milestones
-
-### M1 — Protocol + Core Client
-- [ ] `@maayo/protocol` — types only, zero deps
-- [ ] `@maayo/client` — Dexie schema, outbox, push/pull engine, ULID, deviceId
-- [ ] Unit tests for push/pull/LWW logic
-- [ ] README with protocol spec
-
-### M2 — Angular Adapter
-- [ ] `@maayo/angular` — `provideSync()`, `syncCollection()` signal primitive
-- [ ] Demo Angular app (todo-style, works offline)
-- [ ] Integration test: offline → queue → online → sync
-
-### M3 — Spring Adapter
-- [ ] `@maayo/spring` — autoconfigured MutationController + ChangesController
-- [ ] `ChannelAuthorizer` interface for RBAC-based channel gating
-- [ ] Demo Spring Boot app
-- [ ] Integration test: client ↔ server full cycle
-
-### M4 — Polish + OSS Launch
-- [ ] `maayo.dev` docs site
-- [ ] NestJS + Express adapters
-- [ ] React adapter
-- [ ] npm publish all packages
-- [ ] GitHub org: `maayojs`
+| Registry | npm (`@maayo/`) + GitHub Packages (Spring) | Public scoped packages |
 
 ---
 
@@ -257,7 +215,7 @@ push can be added as an optional optimisation later without changing the protoco
 **Why LWW and not CRDTs?**
 The target domain (school management data) has low write concurrency and
 well-defined ownership per record. LWW by `updatedAt` handles 99% of cases.
-CRDT support can be layered in M5+ via a `conflictResolver` option.
+CRDT support is planned for v0.5 via a `conflictResolver` option.
 
 **Why two endpoints and not one?**
 Push and pull have different semantics, auth patterns, and failure modes.
@@ -268,3 +226,82 @@ testable on any backend.
 Dexie has the best TypeScript support, the cleanest API, and handles
 IndexedDB's quirks reliably. The storage layer is pluggable in the design —
 `@maayo/client` accepts a `Store` interface, Dexie is the default adapter.
+
+---
+
+## Milestones
+
+### M1 — Protocol + Core Client ✅
+- [x] `@maayo/protocol` — types only, zero deps
+- [x] `@maayo/client` — Dexie schema, outbox, push/pull engine, ULID, deviceId
+- [x] Unit tests for push/pull/LWW logic
+- [x] README with protocol spec
+
+### M2 — Angular Adapter ✅
+- [x] `@maayo/angular` — `provideSync()`, `syncCollection()` signal primitive
+- [x] Integration test: offline → queue → online → sync
+
+### M3 — Spring Adapter ✅
+- [x] `@maayo/spring` — autoconfigured MutationController + ChangesController
+- [x] `ChannelAuthorizer` interface for RBAC-based channel gating
+- [x] Integration test: client ↔ server full cycle
+
+### M4 — React + OSS Launch ✅
+- [x] `@maayo/react` — `SyncProvider`, `useCollection`, `useSyncStatus` hooks
+- [x] npm publish: `@maayo/protocol`, `@maayo/client`, `@maayo/angular`, `@maayo/react`
+- [x] GitHub Packages publish: `dev.maayo:maayo-spring`
+- [x] Docs: protocol spec, concepts, getting-started, per-package READMEs
+- [x] MIT License
+
+---
+
+## Roadmap
+
+### v0.2 — Quick Wins
+- [ ] **Time-travel / audit log** — expose `engine.history(table, id)` returning every state a record has been in; mutation log is already persisted, this is an API surface question
+- [ ] **Multi-tab deduplication** — `SharedWorker` / `BroadcastChannel` so only one tab runs the sync loop; others subscribe to updates via postMessage
+- [ ] **Schema migrations** — declarative `migrations: [{ version: 2, up: (db) => ... }]` in `SyncConfig`; Maayo runs them on IndexedDB before starting sync when the app version bumps
+- [ ] **NestJS + Express adapters** — `@maayo/nest`, `@maayo/express` — implement the two server endpoints for the Node.js ecosystem
+
+### v0.3 — Background Sync
+- [ ] **Service Worker integration** — intercept fetch and queue mutations; mutations survive tab close
+- [ ] **Background Sync API** — use `navigator.serviceWorker` + `SyncManager` so queued mutations fire even when the browser is not open
+- [ ] Depends on multi-tab dedup from v0.2 (Service Worker is effectively a third tab)
+
+### v0.4 — End-to-End Encryption
+- [ ] **Zero-knowledge client-side encryption** via Web Crypto API (`AES-GCM`)
+- [ ] Opt-in per-table or globally: `encryption: { key: CryptoKey }` in `SyncConfig`
+- [ ] Server stores and syncs ciphertext only — never sees plaintext
+- [ ] Key management helpers: passphrase-derived (PBKDF2), injected, or server-assisted key exchange
+- [ ] Spring adapter: treat encrypted payload as opaque blob, no schema change needed
+- [ ] Enables HIPAA / FERPA / GDPR-sensitive deployments
+
+### v0.5 — CRDT Conflict Resolution
+- [ ] **Per-field merge strategies** to replace or augment LWW
+- [ ] Built-in CRDT types:
+  - `lww` (current default) — last write wins by `updatedAt`
+  - `counter` — G-counter, merges by taking max
+  - `set` — OR-Set, union on concurrent adds
+  - `text` — RGA CRDT, concurrent text edits merge without data loss (Google Docs-style)
+- [ ] `conflictResolver` option in `SyncConfig` per table
+- [ ] Vector clock infrastructure in `Mutation.parentIds` (field already reserved)
+- [ ] Fully backward-compatible — LWW remains default
+
+### v1.0 — P2P Local Sync
+- [ ] **WebRTC data channels** — devices on the same LAN sync directly without hitting the server
+- [ ] Signaling via one new optional endpoint: `POST /sync/signal` (or out-of-band)
+- [ ] Spring adapter ships signaling handler out of the box
+- [ ] Discovery: mDNS on native, manual peer code in browser
+- [ ] Merge uses the same push/pull + LWW or CRDT logic — P2P is just another transport
+- [ ] Key use case: schools / clinics with unreliable internet — a teacher's tablet becomes the local hub; student tablets sync to it directly
+- [ ] Fully optional — existing deployments need zero changes to adopt
+
+---
+
+## Version History
+
+| Version | Date | Notes |
+|---------|------|-------|
+| 0.1.2 | 2026-05-31 | M4 complete — all packages published to npm + GitHub Packages, full docs, MIT license |
+| 0.1.1 | 2026-05-31 | CI fixes (Spring 6.2 handler detection, pnpm allowBuilds, vitest path aliases) |
+| 0.1.0 | 2026-05 | Initial release — protocol, client, angular, react, spring |
