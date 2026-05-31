@@ -3,6 +3,7 @@ import type { MaayoDatabase, UserTableSchema } from './database';
 import { openDatabase } from './database';
 import { pending, markSynced, purgeSynced } from './outbox';
 import { pull } from './pull';
+import { TabCoordinator } from './leader';
 
 export interface SyncConfig {
   /** Your backend base URL, no trailing slash */
@@ -26,9 +27,12 @@ export class SyncEngine {
   private _status: SyncStatus = 'idle';
   private _intervalId: ReturnType<typeof setInterval> | null = null;
   private _statusListeners = new Set<(s: SyncStatus) => void>();
+  private _coordinator: TabCoordinator;
+  private _started = false;
 
   constructor(private readonly config: SyncConfig) {
     this.db = openDatabase(config.dbName, config.tables);
+    this._coordinator = new TabCoordinator(config.dbName);
   }
 
   get status(): SyncStatus {
@@ -41,7 +45,17 @@ export class SyncEngine {
   }
 
   start(): void {
-    if (this._intervalId !== null) return;
+    if (this._started) return;
+    this._started = true;
+    // Follower tabs receive status from the leader via BroadcastChannel
+    this._coordinator.onStatus((s) => {
+      if (!this._coordinator.isLeader) this._setStatus(s as SyncStatus);
+    });
+    void this._startAsync();
+  }
+
+  private async _startAsync(): Promise<void> {
+    await this._coordinator.waitForLeadership();
     void this.sync();
     this._intervalId = setInterval(() => void this.sync(), this.config.intervalMs ?? 10_000);
   }
@@ -51,6 +65,8 @@ export class SyncEngine {
       clearInterval(this._intervalId);
       this._intervalId = null;
     }
+    this._coordinator.release();
+    this._started = false;
   }
 
   async sync(): Promise<void> {
@@ -106,5 +122,6 @@ export class SyncEngine {
   private _setStatus(s: SyncStatus): void {
     this._status = s;
     this._statusListeners.forEach((fn) => fn(s));
+    if (this._coordinator.isLeader) this._coordinator.broadcastStatus(s);
   }
 }
