@@ -1,6 +1,6 @@
 {
   "name": "@maayo/nest",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "NestJS adapter for Maayo offline-first sync — MaayoModule, MutationsController, ChangesController",
   "keywords": [
     "offline-first",

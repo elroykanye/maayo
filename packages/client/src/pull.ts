@@ -63,7 +63,7 @@ async function applyMutations(db: MaayoDatabase, mutations: Mutation[]): Promise
         if (existingTs >= incomingTs) { skipped++; continue; } // LWW: local is newer
       }
 
-      await table.put(incoming);
+      await table.put({ ...incoming, id: mutation.entityId });
     }
 
     await db._history.put({

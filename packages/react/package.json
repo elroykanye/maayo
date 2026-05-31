@@ -1,6 +1,6 @@
 {
   "name": "@maayo/react",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "React adapter for Maayo \u00e2\u20ac\u201d SyncProvider, useCollection, useSyncStatus",
   "keywords": [
     "offline-first",
