@@ -9,23 +9,51 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
+      any_npm: ${{ steps.check.outputs.any_npm }}
+      protocol: ${{ steps.check.outputs.protocol }}
+      client: ${{ steps.check.outputs.client }}
+      angular: ${{ steps.check.outputs.angular }}
+      react: ${{ steps.check.outputs.react }}
+      nest: ${{ steps.check.outputs.nest }}
+      express: ${{ steps.check.outputs.express }}
       spring: ${{ steps.check.outputs.spring }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Check spring changes since previous tag
+      - name: Detect per-package changes since previous tag
         id: check
         run: |
           PREV=$(git tag --sort=-version:refname | grep -E '^v[0-9]' | sed -n '2p')
-          if [ -z "$PREV" ]; then
-            echo "spring=true" >> "$GITHUB_OUTPUT"
+          changed() {
+            [ -z "$PREV" ] && echo true && return
+            [ -n "$(git diff --name-only "$PREV" HEAD -- "$1")" ] && echo true || echo false
+          }
+          PROTOCOL=$(changed packages/protocol)
+          CLIENT=$(changed packages/client)
+          ANGULAR=$(changed packages/angular)
+          REACT=$(changed packages/react)
+          NEST=$(changed packages/nest)
+          EXPRESS=$(changed packages/express)
+          SPRING=$(changed packages/spring)
+          if [ "$PROTOCOL" = true ] || [ "$CLIENT" = true ] || [ "$ANGULAR" = true ] || \
+             [ "$REACT" = true ]    || [ "$NEST" = true ]   || [ "$EXPRESS" = true ]; then
+            ANY_NPM=true
           else
-            CHANGED=$(git diff --name-only "$PREV" HEAD -- packages/spring)
-            echo "spring=$( [ -n "$CHANGED" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+            ANY_NPM=false
           fi
+          echo "protocol=$PROTOCOL"   >> "$GITHUB_OUTPUT"
+          echo "client=$CLIENT"       >> "$GITHUB_OUTPUT"
+          echo "angular=$ANGULAR"     >> "$GITHUB_OUTPUT"
+          echo "react=$REACT"         >> "$GITHUB_OUTPUT"
+          echo "nest=$NEST"           >> "$GITHUB_OUTPUT"
+          echo "express=$EXPRESS"     >> "$GITHUB_OUTPUT"
+          echo "spring=$SPRING"       >> "$GITHUB_OUTPUT"
+          echo "any_npm=$ANY_NPM"     >> "$GITHUB_OUTPUT"
 
   publish-npm:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any_npm == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,12 +70,18 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: pnpm install
       - run: pnpm build
-      - run: pnpm --filter @maayo/protocol publish --access public --no-git-checks
-      - run: pnpm --filter @maayo/client publish --access public --no-git-checks
-      - run: pnpm --filter @maayo/angular publish --access public --no-git-checks
-      - run: pnpm --filter @maayo/react publish --access public --no-git-checks
-      - run: pnpm --filter @maayo/nest publish --access public --no-git-checks
-      - run: pnpm --filter @maayo/express publish --access public --no-git-checks
+      - if: needs.detect-changes.outputs.protocol == 'true'
+        run: pnpm --filter @maayo/protocol publish --access public --no-git-checks
+      - if: needs.detect-changes.outputs.client == 'true'
+        run: pnpm --filter @maayo/client publish --access public --no-git-checks
+      - if: needs.detect-changes.outputs.angular == 'true'
+        run: pnpm --filter @maayo/angular publish --access public --no-git-checks
+      - if: needs.detect-changes.outputs.react == 'true'
+        run: pnpm --filter @maayo/react publish --access public --no-git-checks
+      - if: needs.detect-changes.outputs.nest == 'true'
+        run: pnpm --filter @maayo/nest publish --access public --no-git-checks
+      - if: needs.detect-changes.outputs.express == 'true'
+        run: pnpm --filter @maayo/express publish --access public --no-git-checks
     env:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
