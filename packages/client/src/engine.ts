@@ -31,6 +31,7 @@ export class SyncEngine {
   private _statusListeners = new Set<(s: SyncStatus) => void>();
   private _coordinator: TabCoordinator;
   private _started = false;
+  private _syncInFlight: Promise<void> | null = null;
 
   constructor(private readonly config: SyncConfig) {
     this.db = openDatabase(config.dbName, config.tables, config.migrations);
@@ -79,7 +80,22 @@ export class SyncEngine {
       .sortBy('clientTs');
   }
 
+  /**
+   * Runs one push+pull cycle. Concurrent callers (the interval timer, a manual trigger, and a
+   * consumer's own reactive re-trigger can all land in the same tick) share the SAME in-flight
+   * run rather than each starting an independent one — otherwise two overlapping cycles issue
+   * their pull requests concurrently against the same local DB for no benefit, doubling
+   * in-flight requests right when a fresh session's first sync is already slowest.
+   */
   async sync(): Promise<void> {
+    if (this._syncInFlight) return this._syncInFlight;
+    this._syncInFlight = this._runSync().finally(() => {
+      this._syncInFlight = null;
+    });
+    return this._syncInFlight;
+  }
+
+  private async _runSync(): Promise<void> {
     if (!navigator.onLine) { this._setStatus('offline'); return; }
     this._setStatus('syncing');
     try {
@@ -113,15 +129,24 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * Pulls every channel concurrently — each channel's own pages must stay sequential (each
+   * page's `since` depends on the previous one's cursor), but different channels are
+   * independent, so running them one at a time serialized their full paginated histories for
+   * no reason. A caller with N channels (e.g. an admin with grants across many schools) was
+   * paying for N channels' worth of network round-trips back to back instead of overlapped.
+   */
   private async _pullAll(): Promise<void> {
     const headers = await this._headers();
-    for (const channel of this.config.channels) {
-      let hasMore = true;
-      while (hasMore) {
-        const result = await pull(this.db, { baseUrl: this.config.baseUrl, channel, headers });
-        hasMore = result.hasMore;
-      }
-    }
+    await Promise.all(
+      this.config.channels.map(async (channel) => {
+        let hasMore = true;
+        while (hasMore) {
+          const result = await pull(this.db, { baseUrl: this.config.baseUrl, channel, headers });
+          hasMore = result.hasMore;
+        }
+      }),
+    );
   }
 
   private async _headers(): Promise<Record<string, string>> {

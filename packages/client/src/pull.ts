@@ -48,8 +48,18 @@ async function applyMutations(db: MaayoDatabase, mutations: Mutation[]): Promise
   const receivedAt = new Date().toISOString();
 
   for (const mutation of mutations) {
-    const table = db.table(mutation.entityType);
-    if (!table) { skipped++; continue; }
+    // Dexie's `.table()` throws InvalidTableError synchronously for a name not in the local
+    // schema — it never returns a falsy value — so an entity type this consumer hasn't
+    // registered yet (e.g. a newly-added synced type the app's table list lags behind) must
+    // be caught here, not checked with `if (!table)`. Left uncaught, this aborts the whole
+    // pull (and the sync cycle that called it) instead of just skipping one mutation.
+    let table;
+    try {
+      table = db.table(mutation.entityType);
+    } catch {
+      skipped++;
+      continue;
+    }
 
     if (mutation.op === 'DELETE') {
       await table.delete(mutation.entityId);

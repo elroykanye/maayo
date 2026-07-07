@@ -72,4 +72,13 @@ describe('applyMutations via pull()', () => {
     await callPull([makeMutation({ op: 'DELETE' })]);
     expect(await db.table('student').get('stu-abc')).toBeUndefined();
   });
+
+  it('skips (does not throw) a mutation for an entityType not in the local schema', async () => {
+    // Dexie's db.table() throws InvalidTableError for an unregistered name — this must be
+    // caught and counted as skipped, not left to abort the whole pull.
+    const m = makeMutation({ entityType: 'UnknownType' });
+    const { result } = await callPull([m]);
+    expect(result.skipped).toBe(1);
+    expect(result.applied).toBe(0);
+  });
 });
