@@ -72,6 +72,24 @@ export class SyncEngine {
     this._started = false;
   }
 
+  /**
+   * Resolves once no sync() call is in flight — immediately if none is. `stop()` only clears
+   * the interval timer and releases tab leadership; it does NOT cancel or wait for a sync that
+   * was already running when it was called. A consumer that's about to do something destructive
+   * to `db` right after stop() (deleting the database on logout, for example) MUST await this
+   * first, or the in-flight run's next `db.table()`/query throws Dexie's DatabaseClosedError
+   * once the delete completes underneath it — and if the delete finishes first, the in-flight
+   * pull can go on to write into a database that no longer exists.
+   */
+  async waitForIdle(): Promise<void> {
+    if (!this._syncInFlight) return;
+    try {
+      await this._syncInFlight;
+    } catch {
+      // sync() already logs its own errors; this is just a "wait until settled" join.
+    }
+  }
+
   /** Returns all recorded mutations for a record, oldest first. */
   async history(entityType: string, entityId: string): Promise<HistoryRow[]> {
     return this.db._history
