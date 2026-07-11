@@ -1,6 +1,6 @@
 {
   "name": "@maayo/angular",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Angular adapter for Maayo \u00e2\u20ac\u201d provideSync(), syncCollection() signal primitive",
   "keywords": [
     "offline-first",
