@@ -6,8 +6,9 @@ plugins {
     `maven-publish`
 }
 
-group = "dev.maayo"
-version = "0.1.2"
+// group/version come from gradle.properties — the ONLY place they are set.
+// (A hard-coded version here once shadowed the bumped one and re-published a
+// stale artifact coordinate, which GitHub Packages rejects with a 409.)
 
 repositories {
     mavenCentral()

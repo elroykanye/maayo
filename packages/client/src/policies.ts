@@ -41,7 +41,6 @@
  * rows, so spreading a row into a payload can never leak merge metadata.
  */
 import type { Mutation, SyncPolicy } from '@maayo/protocol';
-import { SYSTEM_AUTHOR } from '@maayo/protocol';
 import type { MaayoDatabase } from './database';
 import type { ApplyMutationHook, ApplyOutcome } from './pull';
 
@@ -103,6 +102,11 @@ export interface PolicyDecision {
   row?: Record<string, unknown>;
   meta: PolicyMeta;
 }
+
+/** Default author id of server-authored fan-out mutations — mirrors
+ * `@maayo/protocol`'s `SYSTEM_AUTHOR` (kept local so this package stays
+ * type-only on the protocol; see PolicyApplyOptions.systemAuthorId). */
+const SYSTEM_AUTHOR = 'system';
 
 const DELETED_FIELD = '__deleted';
 
