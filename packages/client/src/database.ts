@@ -6,6 +6,25 @@ export interface OutboxRow extends Mutation {
   id: string;
   /** ISO-8601, set when the server accepts the mutation */
   syncedAt?: string;
+  // --- server-rejection lifecycle (see outbox.ts) ------------------------------
+  // These are plain optional fields on the existing table — NEVER a new internal
+  // table. MAAYO_DB_VERSION is effectively frozen: user migration versions are
+  // keyed off it (MAAYO_DB_VERSION + mig.version), so bumping it would shift
+  // every consumer's already-applied Dexie versions and re-run their latest
+  // data migration on upgrade. Dexie tables are schemaless beyond their indexes,
+  // so additive fields are always safe.
+  /** Number of times the server has REJECTED this mutation (207 `rejected`). */
+  attempts?: number;
+  /** ISO-8601 — the push loop skips this row until this time (retry backoff). */
+  nextAttemptAt?: string;
+  /** ISO-8601 — set when the row is QUARANTINED: it exhausted its retry budget
+   * (or was rejected with a permanent code) and is no longer pushed. Inspect
+   * with `rejected()`, revive with `retryRejected()`, drop with `discardRejected()`. */
+  rejectedAt?: string;
+  /** Server-supplied human-readable rejection reason (last one seen). */
+  rejectReason?: string;
+  /** Server-supplied machine-readable rejection code (last one seen). */
+  rejectCode?: string;
 }
 
 export interface CursorRow {
@@ -42,7 +61,12 @@ export interface MigrationDef {
 
 export type UserTableSchema = Record<string, string>;
 
-// Bump this whenever a new internal table is added.
+// FROZEN — do not bump. User migration versions are declared relative to this
+// (MAAYO_DB_VERSION + mig.version), so raising it shifts every consumer's
+// already-applied Dexie version numbers: an installed DB would treat its own
+// latest data migration as "new" and re-run it. Internal additions must be
+// schemaless fields on existing tables (see OutboxRow's rejection fields), or
+// a redesign of the versioning contract.
 const MAAYO_DB_VERSION = 2;
 
 export class MaayoDatabase extends Dexie {

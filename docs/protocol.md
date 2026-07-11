@@ -55,11 +55,19 @@ Authorization: Bearer <token>
   "accepted": [
     { "id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "receivedAt": "2026-01-15T09:00:00.500Z" }
   ],
-  "rejected": []
+  "rejected": [
+    { "id": "01ARZ3NDEKTSV4RRFFQ69G5FB0", "reason": "slug already taken", "code": "SLUG_TAKEN" }
+  ]
 }
 ```
 
 Every mutation in the request must appear in exactly one of `accepted` or `rejected`.
+
+A rejection carries a human-readable `reason` (safe to surface in a UI) and an
+optional machine-readable `code`. Codes let the client distinguish PERMANENT
+rejections — retrying can never succeed, e.g. a uniqueness conflict — from
+transient ones: list them in `SyncConfig.permanentRejectCodes` and the row is
+quarantined immediately instead of burning its retry budget.
 
 ### Server contract
 
@@ -67,6 +75,18 @@ Every mutation in the request must appear in exactly one of `accepted` or `rejec
 - **Validate**: reject mutations with a blank `id`.
 - **Authorise**: optionally check the caller is allowed to push to `channel`.
 - **Atomic per mutation**: partial success is fine — the client retries only rejected IDs.
+
+### Client behaviour on rejection
+
+Each rejection bumps the outbox row's attempt counter and schedules an
+exponential re-push backoff (30s doubling to a 30min cap). After
+`maxRejectAttempts` rejections (default 5) — or immediately for a permanent
+`code` — the row is **quarantined**: it leaves the push loop but is never
+silently discarded. `SyncConfig.onReject` fires on every rejection with the
+row and whether it was quarantined; `rejected(db)` lists the quarantine,
+`retryRejected(db, id)` revives a row (preserving its original `clientTs` and
+`parentIds` — a retry keeps its causal position), `discardRejected(db, id)`
+drops it for good.
 
 ---
 
@@ -131,6 +151,6 @@ provideSync({
 | Scenario | Server response | Client behaviour |
 |----------|----------------|-----------------|
 | Auth failure | `401` | `SyncStatus → 'error'`, retry next cycle |
-| Channel forbidden | `403` (changes) or mutation in `rejected` | Skip channel / log |
+| Channel forbidden | `403` (changes) or mutation in `rejected` | Skip channel / backoff + quarantine (see above) |
 | Server error | `5xx` | `SyncStatus → 'error'`, retry next cycle |
 | Offline | — | `SyncStatus → 'offline'`, outbox drains on reconnect |

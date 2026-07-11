@@ -1,8 +1,8 @@
-import type { BatchMutationsResponse } from '@maayo/protocol';
-import type { MaayoDatabase, UserTableSchema, MigrationDef, HistoryRow } from './database';
+import type { BatchMutationsResponse, RejectedMutation } from '@maayo/protocol';
+import type { MaayoDatabase, UserTableSchema, MigrationDef, HistoryRow, OutboxRow } from './database';
 import { openDatabase } from './database';
-import { pending, markSynced, purgeSynced } from './outbox';
-import { pull } from './pull';
+import { pending, markSynced, purgeSynced, recordRejection } from './outbox';
+import { pull, type ApplyMutationHook } from './pull';
 import { TabCoordinator } from './leader';
 
 export interface SyncConfig {
@@ -20,6 +20,32 @@ export interface SyncConfig {
   authHeaders?: () => Record<string, string> | Promise<Record<string, string>>;
   /** Push + pull interval in ms, default 10_000 */
   intervalMs?: number;
+  /**
+   * Called once per server-rejected mutation each time a push reports it (207
+   * `rejected` entries). `quarantined` is true when this rejection took the row
+   * out of the push loop (retry budget exhausted, or a permanent code) — the
+   * moment to surface it to the user. Rejected rows back off exponentially and
+   * are inspectable via `rejected()` / revivable via `retryRejected()`.
+   */
+  onReject?: (rejection: RejectedMutation, mutation: OutboxRow, quarantined: boolean) => void;
+  /** Rejections per mutation before it is quarantined. Default 5. */
+  maxRejectAttempts?: number;
+  /** Rejection codes that quarantine immediately (retrying can never succeed). */
+  permanentRejectCodes?: readonly string[];
+  /**
+   * Apply pulled DELETEs as SOFT tombstones: instead of hard-deleting the row,
+   * it is replaced with `{ id, deletedAt: <winning clientTs> }`, gated by the
+   * same last-writer-wins comparison as upserts (a stale delete loses to a
+   * newer edit; a newer upsert resurrects). Reads must filter `deletedAt`.
+   * Default false (legacy hard delete).
+   */
+  softDelete?: boolean;
+  /**
+   * Own the merge: called for each pulled mutation INSTEAD of the built-in
+   * last-writer-wins apply. Receives the default apply as an escape hatch so a
+   * hook can delegate the cases it doesn't care about. See {@link ApplyMutationHook}.
+   */
+  applyMutation?: ApplyMutationHook;
 }
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'offline';
@@ -145,6 +171,23 @@ export class SyncEngine {
       const firstReceivedAt = data.accepted[0].receivedAt;
       await markSynced(this.db, data.accepted.map((a) => a.id), firstReceivedAt);
     }
+    // A 207 body can reject individual mutations. Ignoring them (the old
+    // behaviour) re-POSTed every rejected row on every cycle forever, invisibly.
+    // Each rejection now backs off exponentially and quarantines once its retry
+    // budget is spent (or immediately for permanent codes) — see outbox.ts.
+    for (const rejection of data.rejected ?? []) {
+      const recorded = await recordRejection(this.db, rejection, {
+        maxAttempts: this.config.maxRejectAttempts,
+        permanentCodes: this.config.permanentRejectCodes,
+      });
+      if (recorded && this.config.onReject) {
+        try {
+          this.config.onReject(rejection, recorded.row, recorded.quarantined);
+        } catch (err) {
+          console.error('[maayo] onReject callback failed', err);
+        }
+      }
+    }
   }
 
   /**
@@ -160,7 +203,13 @@ export class SyncEngine {
       this.config.channels.map(async (channel) => {
         let hasMore = true;
         while (hasMore) {
-          const result = await pull(this.db, { baseUrl: this.config.baseUrl, channel, headers });
+          const result = await pull(this.db, {
+            baseUrl: this.config.baseUrl,
+            channel,
+            headers,
+            softDelete: this.config.softDelete,
+            applyMutation: this.config.applyMutation,
+          });
           hasMore = result.hasMore;
         }
       }),

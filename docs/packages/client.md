@@ -41,6 +41,11 @@ await engine.sync();   // run one cycle immediately
 | `tables` | `UserTableSchema` | `{}` | Extra Dexie table schemas for user data |
 | `authHeaders` | `() => Record<string,string> \| Promise<...>` | none | Called before each request |
 | `intervalMs` | `number` | `10_000` | Push+pull interval in milliseconds |
+| `onReject` | `(rejection, mutation, quarantined) => void` | none | Fires per server-rejected mutation (207 `rejected`) |
+| `maxRejectAttempts` | `number` | `5` | Rejections before a mutation is quarantined out of the push loop |
+| `permanentRejectCodes` | `readonly string[]` | `[]` | Rejection `code`s that quarantine immediately |
+| `softDelete` | `boolean` | `false` | Apply pulled DELETEs as gated `{ id, deletedAt }` tombstones instead of hard deletes |
+| `applyMutation` | `ApplyMutationHook` | none | Own the merge — called per pulled mutation instead of the built-in LWW apply |
 
 ### `SyncStatus`
 
@@ -60,7 +65,24 @@ Direct access to the `MaayoDatabase` (Dexie instance). Use this to query tables,
 ## Outbox
 
 ```typescript
-import { enqueue, pending, markSynced, purgeSynced } from '@maayo/client';
+import {
+  enqueue, pending, markSynced, purgeSynced,
+  rejected, retryRejected, discardRejected,
+} from '@maayo/client';
+```
+
+### Rejection lifecycle
+
+A push can be a partial success: the 207 body's `rejected` entries are folded
+into their outbox rows — exponential re-push backoff (30s doubling to a 30min
+cap), then **quarantine** after `maxRejectAttempts` (or immediately for a
+`permanentRejectCodes` match). Quarantined rows leave `pending()` but are never
+silently dropped:
+
+```typescript
+await rejected(db);            // inspect quarantined mutations (reason + code)
+await retryRejected(db, id);   // back into the push loop, original clientTs/parentIds intact
+await discardRejected(db, id); // drop for good
 ```
 
 ### `enqueue(db, opts): Promise<OutboxRow>`
@@ -109,6 +131,19 @@ const { cursor, result, hasMore } = await pull(db, {
 ```
 
 `pull` reads the cursor from `_cursors`, fetches from `GET /sync/changes`, applies LWW to each entity table, and updates the cursor.
+
+The built-in merge is last-writer-wins on the effective timestamp (payload
+`updatedAt`, else `clientTs`) with a **deterministic tie-break**: equal
+timestamps compare the mutation identity `(deviceId, id)` against the current
+winner's (recovered from `_history`), so every replica picks the same winner
+regardless of arrival order. With `softDelete: true`, DELETEs write a gated
+`{ id, deletedAt }` tombstone a newer upsert can resurrect, instead of an
+unconditional hard delete.
+
+To own the merge entirely (per-entity conflict policies, CRDTs, server-driven
+schemas), supply `applyMutation` — it receives each pulled mutation plus the
+default apply as an escape hatch, while maayo keeps owning pagination, cursors
+and `_history`.
 
 ---
 

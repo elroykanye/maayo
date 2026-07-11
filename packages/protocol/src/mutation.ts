@@ -32,7 +32,14 @@ export interface AcceptedMutation {
 
 export interface RejectedMutation {
   id: string;
+  /** Human-readable explanation, safe to surface in a client UI. */
   reason: string;
+  /**
+   * Optional machine-readable rejection code (e.g. "SLUG_TAKEN", "FORBIDDEN").
+   * Clients use it to tell PERMANENT rejections (quarantine immediately, don't
+   * burn the retry budget) from transient ones worth re-pushing.
+   */
+  code?: string;
 }
 
 export interface BatchMutationsResponse {
