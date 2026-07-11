@@ -1,6 +1,22 @@
 import type { ChangesResponse, Mutation } from '@maayo/protocol';
 import type { MaayoDatabase } from './database';
 
+/**
+ * HTTP failure from a push or pull — carries the phase and status so consumers
+ * (and the engine's `onAuthError`) can react to auth failures specifically
+ * instead of parsing error messages.
+ */
+export class SyncHttpError extends Error {
+  constructor(
+    readonly phase: 'push' | 'pull',
+    readonly status: number,
+    statusText: string,
+  ) {
+    super(`${phase === 'push' ? 'Push' : 'Pull'} failed: ${status} ${statusText}`);
+    this.name = 'SyncHttpError';
+  }
+}
+
 export type ApplyOutcome = 'applied' | 'skipped';
 
 /**
@@ -28,6 +44,8 @@ export interface PullOptions {
   softDelete?: boolean;
   /** Consumer-owned merge — see {@link ApplyMutationHook}. */
   applyMutation?: ApplyMutationHook;
+  /** Observer fired once per pulled mutation with its merge outcome. */
+  onApplied?: (mutation: Mutation, outcome: ApplyOutcome) => void;
 }
 
 export interface ApplyResult {
@@ -52,7 +70,7 @@ export async function pull(
     headers: { 'Content-Type': 'application/json', ...opts.headers },
   });
 
-  if (!resp.ok) throw new Error(`Pull failed: ${resp.status} ${resp.statusText}`);
+  if (!resp.ok) throw new SyncHttpError('pull', resp.status, resp.statusText);
 
   const data: ChangesResponse = await resp.json();
   const result = await applyMutations(db, data.mutations, opts);
@@ -78,6 +96,7 @@ async function applyMutations(
     const outcome = opts.applyMutation
       ? await opts.applyMutation(db, mutation, defaultApply)
       : await defaultApply();
+    opts.onApplied?.(mutation, outcome);
 
     if (outcome !== 'applied') {
       skipped++;

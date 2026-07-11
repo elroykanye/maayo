@@ -17,7 +17,18 @@ export interface Mutation {
   deviceId: string;
   /** ISO-8601 client-side timestamp */
   clientTs: string;
-  /** Causal dependencies — reserved for future ordering guarantees */
+  /**
+   * Causal dependencies: ids of the mutations this write OBSERVED before it
+   * was made. `[]` means "no ancestry claimed" (legacy clients; still valid).
+   * Conventions used by policy-aware merges:
+   *  - upserts cite the entity's current head mutation id (the last write the
+   *    device had applied for this entity);
+   *  - OR_SET DELETEs cite the observed ADD-TAG ids — the remove kills exactly
+   *    those adds, so a concurrent unobserved re-add survives (add-wins);
+   *  - MANUAL conflict detection treats a write whose parents don't include
+   *    the current winner as CONCURRENT with it.
+   * Servers must persist and echo this field verbatim in /sync/changes.
+   */
   parentIds: string[];
 }
 

@@ -29,6 +29,8 @@ const engine = new SyncEngine({
 engine.start();   // begins push–pull loop
 engine.stop();    // clears the interval
 await engine.sync();   // run one cycle immediately
+await engine.resetCursors();          // full re-pull of every channel ("re-clone")
+await engine.resetCursors(['org:1']); // ...or just some channels
 ```
 
 ### `SyncConfig`
@@ -46,6 +48,8 @@ await engine.sync();   // run one cycle immediately
 | `permanentRejectCodes` | `readonly string[]` | `[]` | Rejection `code`s that quarantine immediately |
 | `softDelete` | `boolean` | `false` | Apply pulled DELETEs as gated `{ id, deletedAt }` tombstones instead of hard deletes |
 | `applyMutation` | `ApplyMutationHook` | none | Own the merge — called per pulled mutation instead of the built-in LWW apply |
+| `onApplied` | `(mutation, outcome) => void` | none | Observer fired once per pulled mutation with its merge outcome |
+| `onAuthError` | `(status, phase) => void` | none | Fires on a 401/403 push or pull (the engine's fetch bypasses app HTTP interceptors) |
 
 ### `SyncStatus`
 
@@ -181,3 +185,52 @@ deviceId()   // → 'f47ac10b-...'                  — stable per-browser UUID
 `ulid()` is monotonic: same-millisecond calls increment the random component. Thread-safe within a single browser tab.
 
 `deviceId()` persists in `localStorage` under key `maayo:deviceId`. Falls back to `crypto.randomUUID()` if storage is unavailable.
+
+---
+
+## Policy-aware merge (`policyApply`)
+
+Opt-in replacement for the built-in LWW apply, driven by the server's declared
+conflict policy per entity type (`GET /sync/schema`):
+
+```typescript
+import { policyApply } from '@maayo/client';
+
+const engine = new SyncEngine({
+  // ...
+  tables: { ...yourTables, _syncmeta: 'key' }, // REQUIRED bookkeeping table
+  softDelete: true,                            // recommended with policies
+  applyMutation: policyApply({ policyFor: (t) => policies[t] ?? 'LWW' }),
+});
+```
+
+| Policy | Merge |
+|--------|-------|
+| `LWW` | Whole-row put; winner = max `(clientTs, deviceId, id)`; DELETE is a gated soft tombstone |
+| `FIELD_LWW` | Per-field max tuple — concurrent edits to different fields both survive; pair with changed-fields `PATCH` payloads |
+| `APPEND_ONLY` | Immutable ledger — earliest CREATE wins; UPDATE/PATCH/DELETE ignored |
+| `OR_SET` | Add-wins observed-remove — CREATEs are add-tags, DELETEs remove only the tags in their `parentIds` |
+| `MANUAL` | LWW value + `hasConflict`/`conflictPayload` on concurrent differing writes; server `"system"` PATCHes applied verbatim |
+
+Reads must filter `deletedAt` (policies always soft-delete). Bookkeeping lives
+in the consumer-declared `_syncmeta` table (`'key'` schema), never on entity
+rows.
+
+---
+
+## Convergence testing (`foldPolicies`, `assertConverges`)
+
+The operational definition of "replicas converge": the same mutations in ANY
+order produce identical state. The harness proves it for your policy map — or
+your own `applyMutation` hook — without touching IndexedDB:
+
+```typescript
+import { assertConverges, foldPolicies } from '@maayo/client';
+
+const state = assertConverges(mutations, (ms) => foldPolicies(ms, policyFor));
+expect(state['Student#s1'].row?.name).toBe('Ada');
+```
+
+`assertConverges` folds every permutation (seeded shuffles for large sets) and
+throws a diff-rich error naming the orders that disagreed; `checkConvergence`
+returns the report instead of throwing.

@@ -14,8 +14,14 @@ export {
 } from './outbox';
 export type { EnqueueOptions, RejectionOptions, RecordedRejection } from './outbox';
 
-export { pull } from './pull';
+export { pull, SyncHttpError } from './pull';
 export type { PullOptions, ApplyResult, ApplyOutcome, ApplyMutationHook } from './pull';
+
+export { policyApply, applyPolicyMutation } from './policies';
+export type { PolicyApplyOptions, PolicyMeta, PolicyDecision, StoredTuple } from './policies';
+
+export { foldPolicies, checkConvergence, assertConverges, canonicalState } from './testing';
+export type { FoldFn, FoldedState, FoldedEntity, ConvergenceOptions, ConvergenceReport } from './testing';
 
 export { SyncEngine } from './engine';
 export type { SyncConfig, SyncStatus } from './engine';

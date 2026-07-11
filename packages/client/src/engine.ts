@@ -1,8 +1,8 @@
-import type { BatchMutationsResponse, RejectedMutation } from '@maayo/protocol';
+import type { BatchMutationsResponse, Mutation, RejectedMutation } from '@maayo/protocol';
 import type { MaayoDatabase, UserTableSchema, MigrationDef, HistoryRow, OutboxRow } from './database';
 import { openDatabase } from './database';
 import { pending, markSynced, purgeSynced, recordRejection } from './outbox';
-import { pull, type ApplyMutationHook } from './pull';
+import { pull, SyncHttpError, type ApplyMutationHook, type ApplyOutcome } from './pull';
 import { TabCoordinator } from './leader';
 
 export interface SyncConfig {
@@ -46,6 +46,15 @@ export interface SyncConfig {
    * hook can delegate the cases it doesn't care about. See {@link ApplyMutationHook}.
    */
   applyMutation?: ApplyMutationHook;
+  /** Observer fired once per pulled mutation with its merge outcome. */
+  onApplied?: (mutation: Mutation, outcome: ApplyOutcome) => void;
+  /**
+   * Fires when a push or pull fails with 401/403. The engine's fetch bypasses
+   * any HTTP-client interceptors the app has, so without this hook an expired
+   * or revoked token just flips status to 'error' and retries forever —
+   * consumers use it to refresh the token or log the session out.
+   */
+  onAuthError?: (status: number, phase: 'push' | 'pull') => void;
 }
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'offline';
@@ -125,6 +134,22 @@ export class SyncEngine {
   }
 
   /**
+   * Clears pull cursors so the next sync replays each channel's history from
+   * the beginning — a local "re-clone" from the mutation log. Use it to heal a
+   * device whose materialised rows may have diverged (e.g. after changing
+   * merge semantics). Safe whenever the merge is idempotent and
+   * order-independent — the built-in LWW and the policy module both are.
+   * Local unsynced outbox rows are untouched.
+   */
+  async resetCursors(channels?: string[]): Promise<void> {
+    if (!channels) {
+      await this.db._cursors.clear();
+      return;
+    }
+    await this.db._cursors.bulkDelete(channels);
+  }
+
+  /**
    * Runs one push+pull cycle. Concurrent callers (the interval timer, a manual trigger, and a
    * consumer's own reactive re-trigger can all land in the same tick) share the SAME in-flight
    * run rather than each starting an independent one — otherwise two overlapping cycles issue
@@ -149,6 +174,13 @@ export class SyncEngine {
       this._setStatus('idle');
     } catch (err) {
       console.error('[maayo] sync error', err);
+      if (err instanceof SyncHttpError && (err.status === 401 || err.status === 403) && this.config.onAuthError) {
+        try {
+          this.config.onAuthError(err.status, err.phase);
+        } catch (hookErr) {
+          console.error('[maayo] onAuthError callback failed', hookErr);
+        }
+      }
       this._setStatus('error');
     }
   }
@@ -164,7 +196,7 @@ export class SyncEngine {
       body: JSON.stringify({ mutations: rows }),
     });
 
-    if (!resp.ok) throw new Error(`Push failed: ${resp.status} ${resp.statusText}`);
+    if (!resp.ok) throw new SyncHttpError('push', resp.status, resp.statusText);
 
     const data: BatchMutationsResponse = await resp.json();
     if (data.accepted.length > 0) {
@@ -209,6 +241,7 @@ export class SyncEngine {
             headers,
             softDelete: this.config.softDelete,
             applyMutation: this.config.applyMutation,
+            onApplied: this.config.onApplied,
           });
           hasMore = result.hasMore;
         }

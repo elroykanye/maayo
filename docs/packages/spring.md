@@ -220,3 +220,25 @@ spring:
   jpa:
     hibernate.ddl-auto: create-drop
 ```
+
+---
+
+## Declared conflict policies (`GET /sync/schema`)
+
+Declare each entity type's conflict policy and the starter serves the optional
+schema endpoint, so policy-aware clients (`@maayo/client`'s `policyApply`)
+merge with the same semantics your appliers enforce:
+
+```yaml
+maayo:
+  policies:
+    Student: LWW
+    Identity: FIELD_LWW
+    Payment: APPEND_ONLY
+    Enrollment: OR_SET
+    Grade: MANUAL
+```
+
+An empty map serves an empty list — clients treat that as "everything is LWW".
+Rejections can also carry a machine-readable `code` (see `RejectedMutation`) so
+clients quarantine permanent failures immediately instead of retrying them.

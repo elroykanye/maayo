@@ -18,7 +18,14 @@ data class BatchMutationsRequest(
 )
 
 data class AcceptedMutation(val id: String, val receivedAt: String)
-data class RejectedMutation(val id: String, val reason: String)
+data class RejectedMutation(
+    val id: String,
+    /** Human-readable explanation, safe to surface in a client UI. */
+    val reason: String,
+    /** Optional machine-readable code — lets clients quarantine PERMANENT
+     *  rejections immediately (see the client's permanentRejectCodes). */
+    val code: String? = null,
+)
 
 data class BatchMutationsResponse(
     val accepted: List<AcceptedMutation>,
@@ -36,3 +43,8 @@ data class ChangesResponse(
     val cursor: Cursor,
     val hasMore: Boolean,
 )
+
+data class EntitySchema(val entityType: String, val policy: String)
+
+/** Response body of GET /sync/schema — the declared conflict policy per entity type. */
+data class SchemaResponse(val entities: List<EntitySchema>)

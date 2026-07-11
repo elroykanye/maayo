@@ -2,6 +2,7 @@ package dev.maayo.spring
 
 import dev.maayo.spring.api.ChangesController
 import dev.maayo.spring.api.MutationController
+import dev.maayo.spring.api.SchemaController
 import dev.maayo.spring.jpa.MaayoJpaAutoConfiguration
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.AutoConfigureAfter
@@ -35,4 +36,9 @@ class MaayoAutoConfiguration {
         authorizer: ChannelAuthorizer,
         properties: MaayoProperties,
     ) = ChangesController(repository, authorizer, properties)
+
+    /** GET /sync/schema — declared conflict policies (maayo.policies.*). An
+     *  empty map serves an empty list; clients treat that as "everything LWW". */
+    @Bean
+    fun maayoSchemaController(properties: MaayoProperties) = SchemaController(properties)
 }

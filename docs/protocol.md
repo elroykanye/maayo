@@ -1,6 +1,6 @@
 # Protocol Specification
 
-Maayo requires exactly two HTTP endpoints. Implement these on any backend to become a Maayo server.
+Maayo requires exactly two HTTP endpoints — plus one optional one (`GET /sync/schema`) for policy-aware clients. Implement these on any backend to become a Maayo server.
 
 ## POST /sync/mutations
 
@@ -46,7 +46,36 @@ Authorization: Bearer <token>
 | `authorIdentityId` | string | Identity ID of the author |
 | `deviceId` | string | Stable per-browser UUID |
 | `clientTs` | string (ISO-8601) | Client-side timestamp |
-| `parentIds` | string[] | Causal dependencies (reserved, send `[]`) |
+| `parentIds` | string[] | Causal dependencies — ids of the mutations this write observed (`[]` = no ancestry claimed). Servers must persist and echo it. See below. |
+
+### Operation semantics
+
+- `CREATE` / `UPDATE` — `payload` is a whole-row snapshot.
+- `PATCH` — `payload` carries ONLY the changed fields (+ `id`). Under
+  `FIELD_LWW` this is what lets two devices' concurrent edits to different
+  fields both survive; under plain LWW it behaves like `UPDATE`.
+- `DELETE` — `payload` may be empty; `entityId` names the row.
+
+### Causality (`parentIds`)
+
+`parentIds` are the ids of the mutations the writing device had OBSERVED for
+this entity when it wrote. Conventions used by policy-aware merges:
+
+- upserts cite the entity's current head mutation id;
+- `OR_SET` DELETEs cite the observed ADD-TAG ids — the remove kills exactly
+  those adds, so a concurrent unobserved re-add survives (add-wins);
+- `MANUAL` treats a write whose parents don't include the current winner as
+  CONCURRENT with it (a conflict when the values differ).
+
+Legacy clients may keep sending `[]`; policy merges have deterministic
+fallbacks for parent-less mutations.
+
+### Server-authored mutations
+
+A server may append its own mutations to the change log (materialised-state
+fan-out, e.g. conflict notifications) with `authorIdentityId: "system"`.
+Policy-aware clients apply them verbatim, outside per-policy gating. Servers
+should REJECT pushed mutations claiming this author.
 
 ### Response `200 OK`
 
@@ -129,6 +158,34 @@ Authorization: Bearer <token>
 - **Ordered**: return mutations ascending by `receivedAt`.
 - **Paginated**: if more rows exist beyond `limit`, set `hasMore: true`. The client will immediately re-pull.
 - **Authorise**: return `403` if the caller is not allowed to pull from `channel`.
+
+---
+
+## GET /sync/schema (optional)
+
+The server's declared conflict policy per entity type, so a policy-aware
+client (`@maayo/client`'s `policyApply`) merges with the SAME semantics the
+server's appliers enforce.
+
+### Response `200 OK`
+
+```json
+{
+  "entities": [
+    { "entityType": "Student", "policy": "LWW" },
+    { "entityType": "Identity", "policy": "FIELD_LWW" },
+    { "entityType": "Payment", "policy": "APPEND_ONLY" },
+    { "entityType": "Enrollment", "policy": "OR_SET" },
+    { "entityType": "Grade", "policy": "MANUAL" }
+  ]
+}
+```
+
+Policies: `LWW` (whole-row last-writer-wins, deterministic tie-break),
+`FIELD_LWW` (per-field LWW), `APPEND_ONLY` (immutable ledger, first CREATE
+wins), `OR_SET` (add-wins observed-remove membership), `MANUAL` (LWW value +
+flagged conflict, never a silent pick). Absence of the endpoint — or of an
+entity type — means `LWW`.
 
 ---
 
