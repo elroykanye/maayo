@@ -200,7 +200,10 @@ function applyLww(
     const fresh = newMeta(m);
     return m.op === 'DELETE'
       ? { action: 'put', row: { id: m.entityId, deletedAt: m.clientTs }, meta: fresh }
-      : { action: 'put', row: { ...payload, id: m.entityId }, meta: fresh };
+      : // `deletedAt: null` MUST be set here too — the later-winner branch below
+        // writes it, so omitting it on first arrival would make the final row
+        // depend on arrival order (caught by the convergence harness).
+        { action: 'put', row: { ...payload, id: m.entityId, deletedAt: null }, meta: fresh };
   }
   if (!raise(current, m)) return { action: 'skip', meta: current };
   if (m.op === 'DELETE') {
