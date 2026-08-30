@@ -160,6 +160,9 @@ importers:
       dexie:
         specifier: ^4.4.3
         version: 4.4.3
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
       react:
         specifier: ^19.1.0
         version: 19.2.6

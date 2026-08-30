@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
 import { SyncEngine, type SyncConfig } from '@maayo/client';
 
 export const SyncContext = createContext<SyncEngine | null>(null);
@@ -9,18 +9,14 @@ export interface SyncProviderProps {
 }
 
 export function SyncProvider({ config, children }: SyncProviderProps) {
-  const engineRef = useRef<SyncEngine | null>(null);
-  if (!engineRef.current) {
-    engineRef.current = new SyncEngine(config);
-  }
+  const engine = useMemo(() => new SyncEngine(config), [config]);
 
   useEffect(() => {
-    const engine = engineRef.current!;
     engine.start();
     return () => engine.stop();
-  }, []);
+  }, [engine]);
 
-  return <SyncContext.Provider value={engineRef.current}>{children}</SyncContext.Provider>;
+  return <SyncContext.Provider value={engine}>{children}</SyncContext.Provider>;
 }
 
 export function useSyncEngine(): SyncEngine {
