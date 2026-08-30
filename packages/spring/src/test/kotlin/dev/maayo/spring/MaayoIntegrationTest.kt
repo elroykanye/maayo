@@ -143,6 +143,53 @@ class MaayoIntegrationTest {
     }
 
     @Test
+    fun `GET sync changes returns tied timestamp mutations exactly once across pages`() {
+        val ids = listOf(
+            "01HTEST0000000000000000010",
+            "01HTEST0000000000000000011",
+            "01HTEST0000000000000000012",
+        )
+        val mutations = ids.map { id ->
+            Mutation(
+                id,
+                "org:pagination",
+                "Student",
+                "student-$id",
+                "CREATE",
+                "{}",
+                "user-1",
+                "device-1",
+                "2026-01-01T00:00:00Z",
+            )
+        }
+        mvc.post("/sync/mutations") {
+            contentType = MediaType.APPLICATION_JSON
+            content = mapper.writeValueAsString(BatchMutationsRequest(mutations))
+        }.andExpect { status { isOk() } }
+
+        val received = mutableListOf<String>()
+        var since: String? = null
+        var lastMutationId: String? = null
+        var hasMore: Boolean
+        do {
+            val result = mvc.get("/sync/changes") {
+                param("channel", "org:pagination")
+                param("limit", "1")
+                since?.let { param("since", it) }
+                lastMutationId?.let { param("lastMutationId", it) }
+            }.andExpect { status { isOk() } }.andReturn()
+            val response = mapper.readValue(result.response.contentAsString, ChangesResponse::class.java)
+            received += response.mutations.map { it.id }
+            since = response.cursor.lastReceivedAt
+            lastMutationId = response.cursor.lastMutationId
+            hasMore = response.hasMore
+        } while (hasMore && received.size <= ids.size)
+
+        assertEquals(ids, received)
+        assertEquals(ids.size, received.toSet().size)
+    }
+
+    @Test
     fun `POST sync mutations rejects blank id`() {
         val request = BatchMutationsRequest(listOf(
             Mutation("", "org:test", "Student", "x", "CREATE", "{}", "u", "d", "2026-01-01T00:00:00Z")

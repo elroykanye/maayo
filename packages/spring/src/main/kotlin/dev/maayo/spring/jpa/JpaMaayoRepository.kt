@@ -35,7 +35,15 @@ class JpaMaayoRepository(
     }
 
     override fun findChanges(channel: String, since: Instant?, limit: Int): List<SavedMutation> =
-        jpa.findByChannelAndSince(channel, since, limit).map { it.toSaved() }
+        findChanges(channel, since, null, limit)
+
+    override fun findChanges(
+        channel: String,
+        since: Instant?,
+        lastMutationId: String?,
+        limit: Int,
+    ): List<SavedMutation> =
+        jpa.findByChannelAndCursor(channel, since, lastMutationId, limit).map { it.toSaved() }
 
     private val listType = object : TypeReference<List<String>>() {}
 

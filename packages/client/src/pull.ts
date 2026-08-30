@@ -64,6 +64,7 @@ export async function pull(
   const cursor = await db._cursors.get(opts.channel);
   const params = new URLSearchParams({ channel: opts.channel });
   if (cursor?.lastReceivedAt) params.set('since', cursor.lastReceivedAt);
+  if (cursor?.lastMutationId) params.set('lastMutationId', cursor.lastMutationId);
   if (opts.limit) params.set('limit', String(opts.limit));
 
   const resp = await fetch(`${opts.baseUrl}/sync/changes?${params}`, {

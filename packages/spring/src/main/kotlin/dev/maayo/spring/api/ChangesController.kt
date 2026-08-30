@@ -24,6 +24,7 @@ class ChangesController(
     fun pull(
         @RequestParam channel: String,
         @RequestParam(required = false) since: String?,
+        @RequestParam(required = false) lastMutationId: String?,
         @RequestParam(required = false) limit: Int?,
         principal: Principal?,
     ): ChangesResponse {
@@ -33,7 +34,7 @@ class ChangesController(
 
         val effectiveLimit = (limit ?: properties.defaultLimit).coerceIn(1, 2000)
         val sinceInstant = since?.let { runCatching { Instant.parse(it) }.getOrNull() }
-        val rows = repository.findChanges(channel, sinceInstant, effectiveLimit + 1)
+        val rows = repository.findChanges(channel, sinceInstant, lastMutationId, effectiveLimit + 1)
 
         val hasMore = rows.size > effectiveLimit
         val page = if (hasMore) rows.dropLast(1) else rows

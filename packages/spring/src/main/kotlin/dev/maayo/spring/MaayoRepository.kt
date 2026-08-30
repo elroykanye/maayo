@@ -19,6 +19,19 @@ interface MaayoRepository {
      * received after [since], ordered by receivedAt ASC, capped at [limit].
      */
     fun findChanges(channel: String, since: Instant?, limit: Int): List<SavedMutation>
+
+    /**
+     * Compound-cursor variant used to continue safely when multiple mutations
+     * share [since]. Existing repository implementations remain source-compatible
+     * through this default, while implementations with stable ordering should
+     * override it and filter after ([since], [lastMutationId]).
+     */
+    fun findChanges(
+        channel: String,
+        since: Instant?,
+        lastMutationId: String?,
+        limit: Int,
+    ): List<SavedMutation> = findChanges(channel, since, limit)
 }
 
 data class SavedMutation(
