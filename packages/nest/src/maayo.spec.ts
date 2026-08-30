@@ -56,6 +56,20 @@ describe('MutationsController', () => {
     expect(result.accepted).toHaveLength(0);
   });
 
+  it('rejects the reserved system author before persistence', async () => {
+    const store = makeStore();
+    const ctrl = new MutationsController(makeOptions(store));
+    const m = { ...mutation('01ABCDEFGHJKMNPQRSTVWXYZ02'), authorIdentityId: 'system' };
+
+    const result = await ctrl.push({ mutations: [m] }, null);
+
+    expect(result.accepted).toHaveLength(0);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({ id: m.id, code: 'reserved_author' }),
+    ]);
+    expect(store.saveAll).not.toHaveBeenCalled();
+  });
+
   it('acks an already-known mutation without saving again', async () => {
     const store = makeStore({ existsById: vi.fn().mockResolvedValue(true) });
     const ctrl = new MutationsController(makeOptions(store));

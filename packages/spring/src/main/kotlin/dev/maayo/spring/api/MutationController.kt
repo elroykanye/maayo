@@ -32,6 +32,13 @@ class MutationController(
                 mutation.id.isBlank() ->
                     rejected += RejectedMutation(mutation.id, "id is required")
 
+                mutation.authorIdentityId == SYSTEM_AUTHOR ->
+                    rejected += RejectedMutation(
+                        mutation.id,
+                        "reserved author identity",
+                        "reserved_author",
+                    )
+
                 !authorizer.canPush(principal, mutation.channel) ->
                     rejected += RejectedMutation(mutation.id, "unauthorized for channel ${mutation.channel}")
 
@@ -51,5 +58,9 @@ class MutationController(
         }
 
         return BatchMutationsResponse(accepted = accepted, rejected = rejected)
+    }
+
+    private companion object {
+        const val SYSTEM_AUTHOR = "system"
     }
 }

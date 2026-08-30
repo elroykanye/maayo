@@ -64,6 +64,22 @@ describe('maayoRouter — POST /mutations', () => {
     expect(res._data.body).toMatchObject({ rejected: [{ reason: 'id is required' }] });
   });
 
+  it('rejects the reserved system author before persistence', async () => {
+    const store = makeStore();
+    const router = maayoRouter({ store });
+    const handler = (router.stack[0] as unknown as RouteLayer).route.stack[0].handle;
+    const m = { ...mutation('01ULID0000000000000000002'), authorIdentityId: 'system' };
+    const res = mockRes();
+
+    await handler(mockReq({ mutations: [m] }), res);
+
+    expect(res._data.body).toMatchObject({
+      accepted: [],
+      rejected: [{ id: m.id, code: 'reserved_author' }],
+    });
+    expect(store.saveAll).not.toHaveBeenCalled();
+  });
+
   it('acks already-known id without re-saving', async () => {
     const store = makeStore({ existsById: vi.fn().mockResolvedValue(true) });
     const router = maayoRouter({ store });

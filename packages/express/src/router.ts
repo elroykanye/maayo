@@ -5,6 +5,7 @@ import type {
   RejectedMutation,
   Cursor,
 } from '@maayo/protocol';
+import { SYSTEM_AUTHOR } from '@maayo/protocol';
 import type { MaayoRouterOptions, SavedMutation } from './interfaces';
 
 export function maayoRouter(options: MaayoRouterOptions): Router {
@@ -20,6 +21,14 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
     for (const mutation of body.mutations) {
       if (!mutation.id?.trim()) {
         rejected.push({ id: mutation.id, reason: 'id is required' });
+        continue;
+      }
+      if (mutation.authorIdentityId === SYSTEM_AUTHOR) {
+        rejected.push({
+          id: mutation.id,
+          reason: 'reserved author identity',
+          code: 'reserved_author',
+        });
         continue;
       }
       if (authorizer && !(await authorizer.canPush(req, mutation.channel))) {

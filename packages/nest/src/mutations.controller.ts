@@ -5,6 +5,7 @@ import type {
   AcceptedMutation,
   RejectedMutation,
 } from '@maayo/protocol';
+import { SYSTEM_AUTHOR } from '@maayo/protocol';
 import { MAAYO_OPTIONS } from './maayo.constants';
 import type { MaayoModuleOptions } from './maayo.options';
 
@@ -25,6 +26,15 @@ export class MutationsController {
     for (const mutation of body.mutations) {
       if (!mutation.id?.trim()) {
         rejected.push({ id: mutation.id, reason: 'id is required' });
+        continue;
+      }
+
+      if (mutation.authorIdentityId === SYSTEM_AUTHOR) {
+        rejected.push({
+          id: mutation.id,
+          reason: 'reserved author identity',
+          code: 'reserved_author',
+        });
         continue;
       }
 

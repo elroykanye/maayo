@@ -156,4 +156,31 @@ class MaayoIntegrationTest {
         assertEquals(1, response.rejected.size)
         assertEquals(0, response.accepted.size)
     }
+
+    @Test
+    fun `POST sync mutations rejects reserved system author`() {
+        val request = BatchMutationsRequest(listOf(
+            Mutation(
+                "01HTEST0000000000000000005",
+                "org:test",
+                "Student",
+                "x",
+                "CREATE",
+                "{}",
+                "system",
+                "d",
+                "2026-01-01T00:00:00Z",
+            )
+        ))
+        val result = mvc.post("/sync/mutations") {
+            contentType = MediaType.APPLICATION_JSON
+            content = mapper.writeValueAsString(request)
+        }.andExpect { status { isOk() } }.andReturn()
+
+        val response = mapper.readValue(result.response.contentAsString, BatchMutationsResponse::class.java)
+        assertEquals(0, response.accepted.size)
+        assertEquals(1, response.rejected.size)
+        assertEquals("reserved_author", response.rejected[0].code)
+        assertFalse(repository.existsById("01HTEST0000000000000000005"))
+    }
 }
