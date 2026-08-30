@@ -11,6 +11,7 @@ const CHANNEL_PREFIX = 'maayo-sync-';
 export class TabCoordinator {
   private bc: BroadcastChannel | null;
   private releaseLeadership: (() => void) | null = null;
+  private acquisition: AbortController | null = null;
   isLeader = false;
 
   constructor(private readonly dbName: string) {
@@ -42,15 +43,31 @@ export class TabCoordinator {
       return;
     }
 
-    await new Promise<void>((resolveAcquired) => {
-      void navigator.locks.request(LOCK_PREFIX + this.dbName, async () => {
-        this.isLeader = true;
-        resolveAcquired();
-        // Hold the lock open until release() is called
-        await new Promise<void>((holdUntilRelease) => {
-          this.releaseLeadership = holdUntilRelease;
-        });
-        this.isLeader = false;
+    const acquisition = new AbortController();
+    this.acquisition = acquisition;
+    await new Promise<void>((resolveAcquired, rejectAcquired) => {
+      const request = navigator.locks.request(
+        LOCK_PREFIX + this.dbName,
+        { signal: acquisition.signal },
+        async () => {
+          if (acquisition.signal.aborted) return;
+          if (this.acquisition === acquisition) this.acquisition = null;
+          this.isLeader = true;
+          resolveAcquired();
+          // Hold the lock open until release() is called
+          await new Promise<void>((holdUntilRelease) => {
+            this.releaseLeadership = holdUntilRelease;
+          });
+          this.isLeader = false;
+        },
+      );
+      void request.catch((error: unknown) => {
+        if (this.acquisition === acquisition) this.acquisition = null;
+        if (acquisition.signal.aborted) {
+          resolveAcquired();
+          return;
+        }
+        rejectAcquired(error);
       });
     });
   }
@@ -62,8 +79,11 @@ export class TabCoordinator {
 
   /** Release leadership and close the broadcast channel. */
   release(): void {
+    this.acquisition?.abort();
+    this.acquisition = null;
     this.releaseLeadership?.();
     this.releaseLeadership = null;
+    this.isLeader = false;
     this.bc?.close();
     this.bc = null;
   }

@@ -1,13 +1,24 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import 'fake-indexeddb/auto';
 import { TabCoordinator } from '../leader';
+import { SyncEngine } from '../engine';
 
 // Sequential lock mock: each request waits for the previous callback to finish.
 function makeLocksMock() {
   const chains = new Map<string, Promise<void>>();
   return {
-    request: vi.fn((name: string, cb: () => Promise<void>): Promise<void> => {
+    request: vi.fn((
+      name: string,
+      optionsOrCallback: { signal?: AbortSignal } | (() => Promise<void>),
+      maybeCallback?: () => Promise<void>,
+    ): Promise<void> => {
+      const options = typeof optionsOrCallback === 'function' ? {} : optionsOrCallback;
+      const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback!;
       const prior = chains.get(name) ?? Promise.resolve();
-      const thisRun = prior.then(() => cb());
+      const thisRun = prior.then(() => {
+        if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        return cb();
+      });
       chains.set(name, thisRun.catch(() => {}));
       return thisRun;
     }),
@@ -72,6 +83,29 @@ describe('TabCoordinator — with Web Locks', () => {
     coord.release();
     await Promise.resolve();
     expect(coord.isLeader).toBe(false);
+  });
+
+  it('a stopped follower never starts after the current leader releases', async () => {
+    setLocks(makeLocksMock());
+    const dbName = `db-stopped-follower-${Math.random()}`;
+    const currentLeader = new TabCoordinator(dbName);
+    await currentLeader.waitForLeadership();
+    const engine = new SyncEngine({
+      baseUrl: 'http://test',
+      dbName,
+      channels: [],
+    });
+    const sync = vi.spyOn(engine, 'sync').mockResolvedValue();
+
+    engine.start();
+    await Promise.resolve();
+    engine.stop();
+    currentLeader.release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(sync).not.toHaveBeenCalled();
+    engine.stop();
+    engine.db.close();
   });
 });
 

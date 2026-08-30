@@ -94,6 +94,7 @@ export class SyncEngine {
 
   private async _startAsync(): Promise<void> {
     await this._coordinator.waitForLeadership();
+    if (!this._started || !this._coordinator.isLeader) return;
     void this.sync();
     this._intervalId = setInterval(() => void this.sync(), this.config.intervalMs ?? 10_000);
   }
