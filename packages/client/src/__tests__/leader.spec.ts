@@ -107,6 +107,20 @@ describe('TabCoordinator — with Web Locks', () => {
     engine.stop();
     engine.db.close();
   });
+
+  it('release cancels a coordinator still queued for the lock', async () => {
+    setLocks(makeLocksMock());
+    const currentLeader = new TabCoordinator('db-cancel-queued');
+    const queued = new TabCoordinator('db-cancel-queued');
+    await currentLeader.waitForLeadership();
+    const queuedWait = queued.waitForLeadership();
+
+    queued.release();
+    currentLeader.release();
+    await queuedWait;
+
+    expect(queued.isLeader).toBe(false);
+  });
 });
 
 describe('TabCoordinator — BroadcastChannel status', () => {
