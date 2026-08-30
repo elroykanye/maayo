@@ -1,6 +1,7 @@
 {
   "name": "@maayo/express",
   "version": "0.3.0",
+  "type": "module",
   "description": "Express adapter for Maayo offline-first sync — maayoRouter() middleware",
   "keywords": ["offline-first", "sync", "express", "maayo"],
   "license": "MIT",
@@ -16,7 +17,7 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsup --config ../../tsup.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

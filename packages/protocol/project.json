@@ -8,7 +8,7 @@
     "build": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "tsc -p tsconfig.build.json",
+        "command": "pnpm run build",
         "cwd": "packages/protocol"
       },
       "outputs": ["{projectRoot}/dist"]

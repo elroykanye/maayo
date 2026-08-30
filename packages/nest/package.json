@@ -1,6 +1,7 @@
 {
   "name": "@maayo/nest",
   "version": "0.3.0",
+  "type": "module",
   "description": "NestJS adapter for Maayo offline-first sync — MaayoModule, MutationsController, ChangesController",
   "keywords": [
     "offline-first",
@@ -23,7 +24,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsup --config ../../tsup.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
