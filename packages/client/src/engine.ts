@@ -23,6 +23,8 @@ export interface SyncConfig {
   intervalMs?: number;
   /** Abort an individual push or pull after this many milliseconds. Default 30_000. */
   requestTimeoutMs?: number;
+  /** Maximum mutations per push request. The engine drains successive batches. Default 100. */
+  pushBatchSize?: number;
   /**
    * Called once per server-rejected mutation each time a push reports it (207
    * `rejected` entries). `quarantined` is true when this rejection took the row
@@ -190,38 +192,51 @@ export class SyncEngine {
   }
 
   private async _push(): Promise<void> {
-    const rows = await pending(this.db);
-    if (rows.length === 0) return;
+    const requestedBatchSize = this.config.pushBatchSize ?? 100;
+    const batchSize = Number.isFinite(requestedBatchSize) && requestedBatchSize > 0
+      ? Math.floor(requestedBatchSize)
+      : 100;
+    while (true) {
+      const rows = await pending(this.db, batchSize);
+      if (rows.length === 0) return;
 
-    const headers = await this._headers();
-    const resp = await fetchWithTimeout(`${this.config.baseUrl}/sync/mutations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({ mutations: rows }),
-    }, this.config.requestTimeoutMs);
+      const headers = await this._headers();
+      const resp = await fetchWithTimeout(`${this.config.baseUrl}/sync/mutations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ mutations: rows }),
+      }, this.config.requestTimeoutMs);
 
-    if (!resp.ok) throw new SyncHttpError('push', resp.status, resp.statusText);
+      if (!resp.ok) throw new SyncHttpError('push', resp.status, resp.statusText);
 
-    const data: BatchMutationsResponse = await resp.json();
-    if (data.accepted.length > 0) {
-      const firstReceivedAt = data.accepted[0].receivedAt;
-      await markSynced(this.db, data.accepted.map((a) => a.id), firstReceivedAt);
-    }
-    // A 207 body can reject individual mutations. Ignoring them (the old
-    // behaviour) re-POSTed every rejected row on every cycle forever, invisibly.
-    // Each rejection now backs off exponentially and quarantines once its retry
-    // budget is spent (or immediately for permanent codes) — see outbox.ts.
-    for (const rejection of data.rejected ?? []) {
-      const recorded = await recordRejection(this.db, rejection, {
-        maxAttempts: this.config.maxRejectAttempts,
-        permanentCodes: this.config.permanentRejectCodes,
-      });
-      if (recorded && this.config.onReject) {
-        try {
-          this.config.onReject(rejection, recorded.row, recorded.quarantined);
-        } catch (err) {
-          console.error('[maayo] onReject callback failed', err);
+      const data: BatchMutationsResponse = await resp.json();
+      const handledIds = new Set<string>();
+      if (data.accepted.length > 0) {
+        const firstReceivedAt = data.accepted[0].receivedAt;
+        const acceptedIds = data.accepted.map((accepted) => accepted.id);
+        acceptedIds.forEach((id) => handledIds.add(id));
+        await markSynced(this.db, acceptedIds, firstReceivedAt);
+      }
+      // A 207 body can reject individual mutations. Ignoring them (the old
+      // behaviour) re-POSTed every rejected row on every cycle forever, invisibly.
+      // Each rejection now backs off exponentially and quarantines once its retry
+      // budget is spent (or immediately for permanent codes) — see outbox.ts.
+      for (const rejection of data.rejected ?? []) {
+        handledIds.add(rejection.id);
+        const recorded = await recordRejection(this.db, rejection, {
+          maxAttempts: this.config.maxRejectAttempts,
+          permanentCodes: this.config.permanentRejectCodes,
+        });
+        if (recorded && this.config.onReject) {
+          try {
+            this.config.onReject(rejection, recorded.row, recorded.quarantined);
+          } catch (err) {
+            console.error('[maayo] onReject callback failed', err);
+          }
         }
+      }
+      if (!rows.some((row) => handledIds.has(row.id))) {
+        throw new Error('Push response did not accept or reject any requested mutation');
       }
     }
   }
