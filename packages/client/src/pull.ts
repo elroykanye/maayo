@@ -1,5 +1,6 @@
 import type { ChangesResponse, Mutation } from '@maayo/protocol';
 import type { MaayoDatabase } from './database';
+import { fetchWithTimeout } from './transport';
 
 /**
  * HTTP failure from a push or pull — carries the phase and status so consumers
@@ -40,6 +41,8 @@ export interface PullOptions {
   channel: string;
   headers?: Record<string, string>;
   limit?: number;
+  /** Abort the pull after this many milliseconds. Default 30_000. */
+  requestTimeoutMs?: number;
   /** Apply DELETEs as gated soft tombstones — see SyncConfig.softDelete. */
   softDelete?: boolean;
   /** Consumer-owned merge — see {@link ApplyMutationHook}. */
@@ -67,9 +70,9 @@ export async function pull(
   if (cursor?.lastMutationId) params.set('lastMutationId', cursor.lastMutationId);
   if (opts.limit) params.set('limit', String(opts.limit));
 
-  const resp = await fetch(`${opts.baseUrl}/sync/changes?${params}`, {
+  const resp = await fetchWithTimeout(`${opts.baseUrl}/sync/changes?${params}`, {
     headers: { 'Content-Type': 'application/json', ...opts.headers },
-  });
+  }, opts.requestTimeoutMs);
 
   if (!resp.ok) throw new SyncHttpError('pull', resp.status, resp.statusText);
 

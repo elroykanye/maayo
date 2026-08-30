@@ -4,6 +4,7 @@ import { openDatabase } from './database';
 import { pending, markSynced, purgeSynced, recordRejection } from './outbox';
 import { pull, SyncHttpError, type ApplyMutationHook, type ApplyOutcome } from './pull';
 import { TabCoordinator } from './leader';
+import { fetchWithTimeout } from './transport';
 
 export interface SyncConfig {
   /** Your backend base URL, no trailing slash */
@@ -20,6 +21,8 @@ export interface SyncConfig {
   authHeaders?: () => Record<string, string> | Promise<Record<string, string>>;
   /** Push + pull interval in ms, default 10_000 */
   intervalMs?: number;
+  /** Abort an individual push or pull after this many milliseconds. Default 30_000. */
+  requestTimeoutMs?: number;
   /**
    * Called once per server-rejected mutation each time a push reports it (207
    * `rejected` entries). `quarantined` is true when this rejection took the row
@@ -191,11 +194,11 @@ export class SyncEngine {
     if (rows.length === 0) return;
 
     const headers = await this._headers();
-    const resp = await fetch(`${this.config.baseUrl}/sync/mutations`, {
+    const resp = await fetchWithTimeout(`${this.config.baseUrl}/sync/mutations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify({ mutations: rows }),
-    });
+    }, this.config.requestTimeoutMs);
 
     if (!resp.ok) throw new SyncHttpError('push', resp.status, resp.statusText);
 
@@ -240,6 +243,7 @@ export class SyncEngine {
             baseUrl: this.config.baseUrl,
             channel,
             headers,
+            requestTimeoutMs: this.config.requestTimeoutMs,
             softDelete: this.config.softDelete,
             applyMutation: this.config.applyMutation,
             onApplied: this.config.onApplied,
