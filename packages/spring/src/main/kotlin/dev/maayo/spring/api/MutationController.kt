@@ -30,6 +30,7 @@ class MutationController(
         val seenIds = mutableSetOf<String>()
 
         for (mutation in request.mutations) {
+            if (!seenIds.add(mutation.id)) continue
             when {
                 mutation.id.isBlank() ->
                     rejected += RejectedMutation(mutation.id, "id is required")
@@ -43,8 +44,6 @@ class MutationController(
 
                 !authorizer.canPush(principal, mutation.channel) ->
                     rejected += RejectedMutation(mutation.id, "unauthorized for channel ${mutation.channel}")
-
-                !seenIds.add(mutation.id) -> Unit
 
                 repository.existsById(mutation.id) -> {
                     // Idempotent re-delivery — acknowledge without re-saving

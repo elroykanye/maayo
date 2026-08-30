@@ -1,7 +1,7 @@
 import express from 'express';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BatchMutationsResponse, Mutation } from '@maayo/protocol';
-import type { MaayoStore, SavedMutation } from './interfaces';
+import type { ChannelAuthorizer, MaayoStore, SavedMutation } from './interfaces';
 import { maayoRouter } from './router';
 
 const servers: Array<{ close: (callback: (error?: Error) => void) => void }> = [];
@@ -45,12 +45,36 @@ describe('maayoRouter HTTP boundary', () => {
     expect(second.body.accepted.map(({ id }) => id).sort()).toEqual([raced.id, unrelated.id].sort());
     expect([...store.persisted.keys()].sort()).toEqual([raced.id, unrelated.id].sort());
   });
+
+  it('uses one coherent first-entry outcome for conflicting duplicate IDs', async () => {
+    const store = new ConcurrentUniqueStore();
+    const authorizer: ChannelAuthorizer = {
+      canPush: (_request, channel) => channel !== 'forbidden',
+      canPull: () => true,
+    };
+    const baseUrl = await startServer(store, authorizer);
+    const deniedId = '01ULID0000000000000000093';
+    const reservedId = '01ULID0000000000000000094';
+
+    const response = await postMutations(baseUrl, [
+      { ...makeMutation(deniedId), channel: 'forbidden' },
+      { ...makeMutation(deniedId), channel: 'allowed' },
+      { ...makeMutation(reservedId), channel: 'allowed', authorIdentityId: 'system' },
+      { ...makeMutation(reservedId), channel: 'allowed' },
+    ]);
+
+    expect(response.status).toBe(200);
+    expect(response.body.accepted).toEqual([]);
+    expect(response.body.rejected.map(({ id }) => id)).toEqual([deniedId, reservedId]);
+    expect(store.saveCalls).toBe(0);
+    expect(store.persisted.size).toBe(0);
+  });
 });
 
-async function startServer(store: MaayoStore): Promise<string> {
+async function startServer(store: MaayoStore, authorizer?: ChannelAuthorizer): Promise<string> {
   const app = express();
   app.use(express.json());
-  app.use('/sync', maayoRouter({ store }));
+  app.use('/sync', maayoRouter({ store, authorizer }));
   const server = app.listen(0, '127.0.0.1');
   servers.push(server);
   await new Promise<void>((resolve, reject) => {

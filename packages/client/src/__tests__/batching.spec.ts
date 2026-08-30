@@ -70,4 +70,44 @@ describe('SyncEngine bounded outbox draining', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(await engine.db._outbox.count()).toBe(1);
   });
+
+  it.each([0.5, 0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'falls back to a usable batch for invalid row count %s',
+    async (pushBatchSize) => {
+      const engine = new SyncEngine({
+        baseUrl: 'http://test',
+        dbName: `test-invalid-batch-${crypto.randomUUID()}`,
+        channels: [],
+        pushBatchSize,
+      });
+      await enqueue(engine.db, {
+        channel: 'org:1',
+        entityType: 'Student',
+        entityId: 'student-batch-boundary',
+        op: 'CREATE',
+        payload: {},
+        authorIdentityId: 'user-1',
+      });
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { mutations: Array<{ id: string }> };
+        return {
+          ok: true,
+          json: async () => ({
+            accepted: body.mutations.map(({ id }) => ({
+              id,
+              receivedAt: '2026-08-30T12:00:00.000Z',
+            })),
+            rejected: [],
+          }),
+        } as Response;
+      });
+      (globalThis as Record<string, unknown>).fetch = fetchMock;
+
+      await engine.sync();
+
+      expect(engine.status).toBe('idle');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(await engine.db._outbox.count()).toBe(0);
+    },
+  );
 });

@@ -20,6 +20,8 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
     const seenIds = new Set<string>();
 
     for (const mutation of body.mutations) {
+      if (seenIds.has(mutation.id)) continue;
+      seenIds.add(mutation.id);
       if (!mutation.id?.trim()) {
         rejected.push({ id: mutation.id, reason: 'id is required' });
         continue;
@@ -36,8 +38,6 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
         rejected.push({ id: mutation.id, reason: `unauthorized for channel ${mutation.channel}` });
         continue;
       }
-      if (seenIds.has(mutation.id)) continue;
-      seenIds.add(mutation.id);
       if (await store.existsById(mutation.id)) {
         accepted.push({ id: mutation.id, receivedAt: new Date().toISOString() });
         continue;

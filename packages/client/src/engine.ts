@@ -193,8 +193,9 @@ export class SyncEngine {
 
   private async _push(): Promise<void> {
     const requestedBatchSize = this.config.pushBatchSize ?? 100;
-    const batchSize = Number.isFinite(requestedBatchSize) && requestedBatchSize > 0
-      ? Math.floor(requestedBatchSize)
+    const normalizedBatchSize = Math.floor(requestedBatchSize);
+    const batchSize = Number.isFinite(requestedBatchSize) && normalizedBatchSize >= 1
+      ? normalizedBatchSize
       : 100;
     while (true) {
       const rows = await pending(this.db, batchSize);

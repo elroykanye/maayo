@@ -39,14 +39,49 @@ class MutationControllerTest {
         assertEquals(failure, thrown)
     }
 
-    private fun mutation(id: String) = Mutation(
+    @Test
+    fun `conflicting duplicate ids use one coherent first-entry outcome`() {
+        val saved = mutableListOf<Mutation>()
+        val repository = object : MaayoRepository {
+            override fun existsById(id: String) = false
+            override fun saveAll(mutations: List<Mutation>): List<SavedMutation> {
+                saved += mutations
+                return mutations.map { SavedMutation(it, Instant.parse("2026-08-30T12:00:00Z")) }
+            }
+            override fun findChanges(channel: String, since: Instant?, limit: Int) = emptyList<SavedMutation>()
+        }
+        val authorizer = object : ChannelAuthorizer {
+            override fun canPush(principal: java.security.Principal?, channel: String) = channel != "forbidden"
+            override fun canPull(principal: java.security.Principal?, channel: String) = true
+        }
+        val controller = MutationController(repository, authorizer)
+        val deniedId = "01HTEST0000000000000000050"
+        val reservedId = "01HTEST0000000000000000051"
+
+        val response = controller.push(BatchMutationsRequest(listOf(
+            mutation(deniedId, channel = "forbidden"),
+            mutation(deniedId, channel = "allowed"),
+            mutation(reservedId, channel = "allowed", authorIdentityId = "system"),
+            mutation(reservedId, channel = "allowed"),
+        )), null)
+
+        assertEquals(emptyList<String>(), response.accepted.map { it.id })
+        assertEquals(listOf(deniedId, reservedId), response.rejected.map { it.id })
+        assertEquals(emptyList<Mutation>(), saved)
+    }
+
+    private fun mutation(
+        id: String,
+        channel: String = "org:test",
+        authorIdentityId: String = "user-1",
+    ) = Mutation(
         id = id,
-        channel = "org:test",
+        channel = channel,
         entityType = "Student",
         entityId = "student-$id",
         op = "CREATE",
         payload = "{}",
-        authorIdentityId = "user-1",
+        authorIdentityId = authorIdentityId,
         deviceId = "device-1",
         clientTs = "2026-01-01T00:00:00Z",
     )
