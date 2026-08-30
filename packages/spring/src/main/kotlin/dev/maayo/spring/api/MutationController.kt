@@ -2,6 +2,7 @@ package dev.maayo.spring.api
 
 import dev.maayo.spring.ChannelAuthorizer
 import dev.maayo.spring.MaayoRepository
+import dev.maayo.spring.SavedMutation
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -26,6 +27,7 @@ class MutationController(
         val rejected = mutableListOf<RejectedMutation>()
 
         val toSave = mutableListOf<Mutation>()
+        val seenIds = mutableSetOf<String>()
 
         for (mutation in request.mutations) {
             when {
@@ -42,6 +44,8 @@ class MutationController(
                 !authorizer.canPush(principal, mutation.channel) ->
                     rejected += RejectedMutation(mutation.id, "unauthorized for channel ${mutation.channel}")
 
+                !seenIds.add(mutation.id) -> Unit
+
                 repository.existsById(mutation.id) -> {
                     // Idempotent re-delivery — acknowledge without re-saving
                     accepted += AcceptedMutation(mutation.id, Instant.now().toString())
@@ -52,12 +56,31 @@ class MutationController(
         }
 
         if (toSave.isNotEmpty()) {
-            repository.saveAll(toSave).forEach { saved ->
-                accepted += AcceptedMutation(saved.mutation.id, saved.receivedAt.toString())
+            try {
+                acceptSaved(repository.saveAll(toSave), accepted)
+            } catch (error: RuntimeException) {
+                val remaining = mutableListOf<Mutation>()
+                toSave.forEach { mutation ->
+                    if (repository.existsById(mutation.id)) {
+                        accepted += AcceptedMutation(mutation.id, Instant.now().toString())
+                    } else {
+                        remaining += mutation
+                    }
+                }
+                if (remaining.size == toSave.size) throw error
+                if (remaining.isNotEmpty()) {
+                    acceptSaved(repository.saveAll(remaining), accepted)
+                }
             }
         }
 
         return BatchMutationsResponse(accepted = accepted, rejected = rejected)
+    }
+
+    private fun acceptSaved(saved: List<SavedMutation>, accepted: MutableList<AcceptedMutation>) {
+        saved.forEach { row ->
+            accepted += AcceptedMutation(row.mutation.id, row.receivedAt.toString())
+        }
     }
 
     private companion object {

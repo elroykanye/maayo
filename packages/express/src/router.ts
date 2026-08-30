@@ -17,6 +17,7 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
     const accepted: AcceptedMutation[] = [];
     const rejected: RejectedMutation[] = [];
     const toSave = [];
+    const seenIds = new Set<string>();
 
     for (const mutation of body.mutations) {
       if (!mutation.id?.trim()) {
@@ -35,6 +36,8 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
         rejected.push({ id: mutation.id, reason: `unauthorized for channel ${mutation.channel}` });
         continue;
       }
+      if (seenIds.has(mutation.id)) continue;
+      seenIds.add(mutation.id);
       if (await store.existsById(mutation.id)) {
         accepted.push({ id: mutation.id, receivedAt: new Date().toISOString() });
         continue;
@@ -43,9 +46,21 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
     }
 
     if (toSave.length > 0) {
-      const saved = await store.saveAll(toSave);
-      for (const s of saved) {
-        accepted.push({ id: s.mutation.id, receivedAt: s.receivedAt.toISOString() });
+      try {
+        acceptSaved(await store.saveAll(toSave), accepted);
+      } catch (error) {
+        const remaining = [];
+        for (const mutation of toSave) {
+          if (await store.existsById(mutation.id)) {
+            accepted.push({ id: mutation.id, receivedAt: new Date().toISOString() });
+          } else {
+            remaining.push(mutation);
+          }
+        }
+        if (remaining.length === toSave.length) throw error;
+        if (remaining.length > 0) {
+          acceptSaved(await store.saveAll(remaining), accepted);
+        }
       }
     }
 
@@ -78,6 +93,12 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
   });
 
   return router;
+}
+
+function acceptSaved(saved: SavedMutation[], accepted: AcceptedMutation[]): void {
+  for (const row of saved) {
+    accepted.push({ id: row.mutation.id, receivedAt: row.receivedAt.toISOString() });
+  }
 }
 
 function buildCursor(page: SavedMutation[]): Cursor {

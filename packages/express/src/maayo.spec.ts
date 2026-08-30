@@ -91,6 +91,57 @@ describe('maayoRouter — POST /mutations', () => {
     expect(store.saveAll).not.toHaveBeenCalled();
     expect((res._data.body as Record<string, unknown[]>).accepted).toHaveLength(1);
   });
+
+  it('saves a duplicate id only once within one request', async () => {
+    const store = makeStore();
+    const router = maayoRouter({ store });
+    const handler = (router.stack[0] as unknown as RouteLayer).route.stack[0].handle;
+    const m = mutation('01ULID0000000000000000010');
+    const res = mockRes();
+
+    await handler(mockReq({ mutations: [m, m] }), res);
+
+    expect(store.saveAll).toHaveBeenCalledWith([m]);
+    expect((res._data.body as Record<string, unknown[]>).accepted).toHaveLength(1);
+  });
+
+  it('recovers a concurrent duplicate and still saves unrelated rows', async () => {
+    const raced = mutation('01ULID0000000000000000011');
+    const unrelated = mutation('01ULID0000000000000000012');
+    const persisted = new Set<string>();
+    const store = makeStore({
+      existsById: vi.fn(async (id: string) => persisted.has(id)),
+      saveAll: vi.fn()
+        .mockImplementationOnce(async () => {
+          persisted.add(raced.id);
+          throw new Error('unique constraint');
+        })
+        .mockImplementation(async (ms: Mutation[]) => {
+          ms.forEach((m) => persisted.add(m.id));
+          return ms.map(saved);
+        }),
+    });
+    const router = maayoRouter({ store });
+    const handler = (router.stack[0] as unknown as RouteLayer).route.stack[0].handle;
+    const res = mockRes();
+
+    await handler(mockReq({ mutations: [raced, unrelated] }), res);
+
+    expect(store.saveAll).toHaveBeenNthCalledWith(2, [unrelated]);
+    expect((res._data.body as Record<string, unknown[]>).accepted).toHaveLength(2);
+  });
+
+  it('does not hide an unrelated persistence failure', async () => {
+    const failure = new Error('database offline');
+    const store = makeStore({ saveAll: vi.fn().mockRejectedValue(failure) });
+    const router = maayoRouter({ store });
+    const handler = (router.stack[0] as unknown as RouteLayer).route.stack[0].handle;
+
+    await expect(handler(
+      mockReq({ mutations: [mutation('01ULID0000000000000000013')] }),
+      mockRes(),
+    )).rejects.toBe(failure);
+  });
 });
 
 describe('maayoRouter — GET /changes', () => {

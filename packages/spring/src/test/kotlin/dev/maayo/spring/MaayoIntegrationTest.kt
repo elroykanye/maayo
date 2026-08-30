@@ -99,6 +99,30 @@ class MaayoIntegrationTest {
     }
 
     @Test
+    fun `POST sync mutations saves a duplicate id only once within one request`() {
+        val mutation = Mutation(
+            id = "01HTEST0000000000000000020",
+            channel = "org:test",
+            entityType = "Student",
+            entityId = "stu-020",
+            op = "CREATE",
+            payload = "{}",
+            authorIdentityId = "user-1",
+            deviceId = "device-1",
+            clientTs = "2026-01-01T00:00:00Z",
+        )
+        val result = mvc.post("/sync/mutations") {
+            contentType = MediaType.APPLICATION_JSON
+            content = mapper.writeValueAsString(BatchMutationsRequest(listOf(mutation, mutation)))
+        }.andExpect { status { isOk() } }.andReturn()
+
+        val response = mapper.readValue(result.response.contentAsString, BatchMutationsResponse::class.java)
+        assertEquals(1, response.accepted.size)
+        assertEquals(0, response.rejected.size)
+        assertTrue(repository.existsById(mutation.id))
+    }
+
+    @Test
     fun `GET sync changes returns pushed mutations for the channel`() {
         val id = "01HTEST0000000000000000003"
         mvc.post("/sync/mutations") {
