@@ -73,6 +73,7 @@ export class MaayoDatabase extends Dexie {
   _outbox!: Table<OutboxRow, string>;
   _cursors!: Table<CursorRow, string>;
   _history!: Table<HistoryRow, string>;
+  private _wasClosed = false;
 
   constructor(name: string, userTables: UserTableSchema = {}, migrations: MigrationDef[] = []) {
     super(name);
@@ -94,17 +95,91 @@ export class MaayoDatabase extends Dexie {
       if (mig.up) ver.upgrade(() => mig.up!(this));
     }
   }
+
+  override close(closeOptions?: { disableAutoOpen: boolean }): void {
+    this._wasClosed = true;
+    super.close(closeOptions);
+  }
+
+  get wasClosed(): boolean {
+    return this._wasClosed;
+  }
 }
 
-const _registry = new Map<string, MaayoDatabase>();
+interface RegistryEntry {
+  db: MaayoDatabase;
+  userTables: UserTableSchema;
+  migrations: MigrationDef[];
+}
+
+const _registry = new Map<string, RegistryEntry>();
 
 export function openDatabase(
   name: string,
   userTables?: UserTableSchema,
   migrations?: MigrationDef[],
 ): MaayoDatabase {
-  if (!_registry.has(name)) {
-    _registry.set(name, new MaayoDatabase(name, userTables, migrations));
+  const existing = _registry.get(name);
+  if (!existing) {
+    const config = captureConfiguration(userTables, migrations);
+    const db = new MaayoDatabase(name, config.userTables, config.migrations);
+    _registry.set(name, { db, ...config });
+    return db;
   }
-  return _registry.get(name)!;
+
+  const suppliedConfiguration = userTables !== undefined || migrations !== undefined;
+  const config = captureConfiguration(
+    userTables ?? existing.userTables,
+    migrations ?? existing.migrations,
+  );
+  if (!existing.db.wasClosed) {
+    if (suppliedConfiguration && !sameConfiguration(existing, config)) {
+      throw new Error(`Database "${name}" is already registered with a different configuration`);
+    }
+    return existing.db;
+  }
+
+  const db = new MaayoDatabase(name, config.userTables, config.migrations);
+  _registry.set(name, { db, ...config });
+  return db;
+}
+
+function captureConfiguration(
+  userTables: UserTableSchema = {},
+  migrations: MigrationDef[] = [],
+): Omit<RegistryEntry, 'db'> {
+  return {
+    userTables: { ...userTables },
+    migrations: migrations.map((migration) => ({
+      ...migration,
+      stores: migration.stores ? { ...migration.stores } : undefined,
+    })),
+  };
+}
+
+function sameConfiguration(
+  existing: Omit<RegistryEntry, 'db'>,
+  requested: Omit<RegistryEntry, 'db'>,
+): boolean {
+  if (!sameStores(existing.userTables, requested.userTables)) return false;
+  if (existing.migrations.length !== requested.migrations.length) return false;
+  return existing.migrations.every((migration, index) => {
+    const other = requested.migrations[index];
+    return migration.version === other.version
+      && migration.up === other.up
+      && sameStores(migration.stores ?? {}, other.stores ?? {});
+  });
+}
+
+function sameStores(
+  first: Record<string, string | null>,
+  second: Record<string, string | null>,
+): boolean {
+  const firstEntries = Object.entries(first).sort(([a], [b]) => a.localeCompare(b));
+  const secondEntries = Object.entries(second).sort(([a], [b]) => a.localeCompare(b));
+  return firstEntries.length === secondEntries.length
+    && firstEntries.every(([key, value], index) => {
+      const other = secondEntries[index];
+      return key === other[0] && value === other[1];
+    });
 }
