@@ -1,6 +1,6 @@
 {
   "name": "@maayo/angular",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Angular adapter for Maayo \u00e2\u20ac\u201d provideSync(), syncCollection() signal primitive",
   "keywords": [

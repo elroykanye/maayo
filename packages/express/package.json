@@ -1,6 +1,6 @@
 {
   "name": "@maayo/express",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Express adapter for Maayo offline-first sync — maayoRouter() middleware",
   "keywords": ["offline-first", "sync", "express", "maayo"],
