@@ -41,4 +41,33 @@ describe('SyncEngine bounded outbox draining', () => {
     expect(new Set(pushedIds.flat()).size).toBe(5);
     expect(await engine.db._outbox.count()).toBe(0);
   });
+
+  it('stops with an error instead of looping when a push resolves no requested row', async () => {
+    const engine = new SyncEngine({
+      baseUrl: 'http://test',
+      dbName: `test-no-progress-${Math.random()}`,
+      channels: [],
+      pushBatchSize: 2,
+    });
+    await enqueue(engine.db, {
+      channel: 'org:1',
+      entityType: 'Student',
+      entityId: 'student-stuck',
+      op: 'CREATE',
+      payload: {},
+      authorIdentityId: 'user-1',
+    });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ accepted: [], rejected: [] }),
+    }) as Response);
+    (globalThis as Record<string, unknown>).fetch = fetchMock;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await engine.sync();
+
+    expect(engine.status).toBe('error');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await engine.db._outbox.count()).toBe(1);
+  });
 });
