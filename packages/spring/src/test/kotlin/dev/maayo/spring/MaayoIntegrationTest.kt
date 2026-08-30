@@ -167,6 +167,43 @@ class MaayoIntegrationTest {
     }
 
     @Test
+    fun `GET sync changes treats SQL wildcard characters as literal channel data`() {
+        val mutations = listOf(
+            Mutation("01HTEST0000000000000000030", "org:a_b/private", "Student", "literal-underscore",
+                "CREATE", "{}", "u1", "d1", "2026-01-01T00:00:00Z"),
+            Mutation("01HTEST0000000000000000031", "org:axb/private", "Student", "wildcard-underscore",
+                "CREATE", "{}", "u1", "d1", "2026-01-01T00:00:00Z"),
+            Mutation("01HTEST0000000000000000032", "org:a%b/private", "Student", "literal-percent",
+                "CREATE", "{}", "u1", "d1", "2026-01-01T00:00:00Z"),
+            Mutation("01HTEST0000000000000000033", "org:anything/private", "Student", "wildcard-percent",
+                "CREATE", "{}", "u1", "d1", "2026-01-01T00:00:00Z"),
+        )
+        mvc.post("/sync/mutations") {
+            contentType = MediaType.APPLICATION_JSON
+            content = mapper.writeValueAsString(BatchMutationsRequest(mutations))
+        }.andExpect { status { isOk() } }
+
+        val underscore = mvc.get("/sync/changes") {
+            param("channel", "org:a_b")
+        }.andExpect { status { isOk() } }.andReturn()
+        val underscoreIds = mapper.readValue(
+            underscore.response.contentAsString,
+            ChangesResponse::class.java,
+        ).mutations.map { it.id }.toSet()
+
+        val percent = mvc.get("/sync/changes") {
+            param("channel", "org:a%b")
+        }.andExpect { status { isOk() } }.andReturn()
+        val percentIds = mapper.readValue(
+            percent.response.contentAsString,
+            ChangesResponse::class.java,
+        ).mutations.map { it.id }.toSet()
+
+        assertEquals(setOf("01HTEST0000000000000000030"), underscoreIds)
+        assertEquals(setOf("01HTEST0000000000000000032"), percentIds)
+    }
+
+    @Test
     fun `GET sync changes returns tied timestamp mutations exactly once across pages`() {
         val ids = listOf(
             "01HTEST0000000000000000010",

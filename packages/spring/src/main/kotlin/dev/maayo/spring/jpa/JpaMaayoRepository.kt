@@ -43,7 +43,23 @@ class JpaMaayoRepository(
         lastMutationId: String?,
         limit: Int,
     ): List<SavedMutation> =
-        jpa.findByChannelAndCursor(channel, since, lastMutationId, limit).map { it.toSaved() }
+        jpa.findByChannelAndCursor(
+            channel,
+            descendantPattern(channel),
+            since,
+            lastMutationId,
+            limit,
+        ).map { it.toSaved() }
+
+    private fun descendantPattern(channel: String): String = buildString {
+        channel.forEach { character ->
+            when (character) {
+                '!', '%', '_' -> append('!')
+            }
+            append(character)
+        }
+        append("/%")
+    }
 
     private val listType = object : TypeReference<List<String>>() {}
 

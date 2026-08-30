@@ -31,7 +31,14 @@ interface MaayoRepository {
         since: Instant?,
         lastMutationId: String?,
         limit: Int,
-    ): List<SavedMutation> = findChanges(channel, since, limit)
+    ): List<SavedMutation> {
+        if (lastMutationId != null) {
+            throw UnsupportedOperationException(
+                "This MaayoRepository must implement compound-cursor pagination before accepting lastMutationId",
+            )
+        }
+        return findChanges(channel, since, limit)
+    }
 }
 
 data class SavedMutation(

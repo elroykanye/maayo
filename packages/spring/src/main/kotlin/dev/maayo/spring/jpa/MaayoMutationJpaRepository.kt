@@ -15,7 +15,7 @@ interface MaayoMutationJpaRepository : JpaRepository<MaayoMutationRecord, Long> 
      */
     @Query("""
         SELECT m FROM MaayoMutationRecord m
-        WHERE (m.channel = :channel OR m.channel LIKE CONCAT(:channel, '/%'))
+        WHERE (m.channel = :channel OR m.channel LIKE :descendantPattern ESCAPE '!')
           AND (
             :since IS NULL
             OR m.receivedAt > :since
@@ -26,6 +26,7 @@ interface MaayoMutationJpaRepository : JpaRepository<MaayoMutationRecord, Long> 
     """)
     fun findByChannelAndCursor(
         @Param("channel") channel: String,
+        @Param("descendantPattern") descendantPattern: String,
         @Param("since") since: Instant?,
         @Param("lastMutationId") lastMutationId: String?,
         @Param("limit") limit: Int,
