@@ -219,6 +219,13 @@ export class SyncEngine {
       if (foreignIds.length > 0) {
         throw new Error(`Push response referenced mutation outside current request: ${[...new Set(foreignIds)].join(', ')}`);
       }
+      const acceptedIdSet = new Set(acceptedIds);
+      const contradictoryIds = rejectedItems
+        .map((rejection) => rejection.id)
+        .filter((id) => acceptedIdSet.has(id));
+      if (contradictoryIds.length > 0) {
+        throw new Error(`Push response both accepted and rejected mutation: ${[...new Set(contradictoryIds)].join(', ')}`);
+      }
 
       const handledIds = new Set<string>();
       if (data.accepted.length > 0) {

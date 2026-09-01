@@ -108,6 +108,45 @@ describe('SyncEngine bounded outbox draining', () => {
     },
   );
 
+  it('rejects an entire response before state changes when one row is accepted and rejected', async () => {
+    const onReject = vi.fn();
+    const engine = new SyncEngine({
+      baseUrl: 'http://test',
+      dbName: `test-contradictory-${crypto.randomUUID()}`,
+      channels: [],
+      permanentRejectCodes: ['PERMANENT'],
+      onReject,
+    });
+    const row = await enqueue(engine.db, {
+      channel: 'org:1',
+      entityType: 'Student',
+      entityId: 'student-contradictory',
+      op: 'CREATE',
+      payload: {},
+      authorIdentityId: 'user-1',
+    });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        accepted: [{ id: row.id, receivedAt: '2026-09-01T12:00:00.000Z' }],
+        rejected: [{ id: row.id, reason: 'contradiction', code: 'PERMANENT' }],
+      }),
+    }) as Response);
+    (globalThis as Record<string, unknown>).fetch = fetchMock;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await engine.sync();
+
+    expect(engine.status).toBe('error');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const untouched = await engine.db._outbox.get(row.id);
+    expect(untouched?.syncedAt).toBeUndefined();
+    expect(untouched?.attempts).toBeUndefined();
+    expect(untouched?.rejectedAt).toBeUndefined();
+    expect(await engine.db._history.count()).toBe(0);
+    expect(onReject).not.toHaveBeenCalled();
+  });
+
   it('stops with an error instead of looping when a push resolves no requested row', async () => {
     const engine = new SyncEngine({
       baseUrl: 'http://test',
