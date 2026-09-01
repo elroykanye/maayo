@@ -211,10 +211,18 @@ export class SyncEngine {
       if (!resp.ok) throw new SyncHttpError('push', resp.status, resp.statusText);
 
       const data: BatchMutationsResponse = await resp.json();
+      const requestedIds = new Set(rows.map((row) => row.id));
+      const acceptedIds = data.accepted.map((accepted) => accepted.id);
+      const rejectedItems = data.rejected ?? [];
+      const foreignIds = [...acceptedIds, ...rejectedItems.map((rejection) => rejection.id)]
+        .filter((id) => !requestedIds.has(id));
+      if (foreignIds.length > 0) {
+        throw new Error(`Push response referenced mutation outside current request: ${[...new Set(foreignIds)].join(', ')}`);
+      }
+
       const handledIds = new Set<string>();
       if (data.accepted.length > 0) {
         const firstReceivedAt = data.accepted[0].receivedAt;
-        const acceptedIds = data.accepted.map((accepted) => accepted.id);
         acceptedIds.forEach((id) => handledIds.add(id));
         await markSynced(this.db, acceptedIds, firstReceivedAt);
       }
@@ -222,7 +230,7 @@ export class SyncEngine {
       // behaviour) re-POSTed every rejected row on every cycle forever, invisibly.
       // Each rejection now backs off exponentially and quarantines once its retry
       // budget is spent (or immediately for permanent codes) — see outbox.ts.
-      for (const rejection of data.rejected ?? []) {
+      for (const rejection of rejectedItems) {
         handledIds.add(rejection.id);
         const recorded = await recordRejection(this.db, rejection, {
           maxAttempts: this.config.maxRejectAttempts,
