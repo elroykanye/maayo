@@ -251,6 +251,23 @@ class MaayoIntegrationTest {
     }
 
     @Test
+    fun `GET sync changes rejects timestamp-only continuation`() {
+        mvc.get("/sync/changes") {
+            param("channel", "org:pagination")
+            param("since", "2026-09-02T00:00:00Z")
+        }.andExpect { status { isBadRequest() } }
+    }
+
+    @Test
+    fun `GET sync changes rejects invalid continuation timestamp`() {
+        mvc.get("/sync/changes") {
+            param("channel", "org:pagination")
+            param("since", "not-a-date")
+            param("lastMutationId", "01HPAGINATION0000000000001")
+        }.andExpect { status { isBadRequest() } }
+    }
+
+    @Test
     fun `POST sync mutations rejects blank id`() {
         val request = BatchMutationsRequest(listOf(
             Mutation("", "org:test", "Student", "x", "CREATE", "{}", "u", "d", "2026-01-01T00:00:00Z")

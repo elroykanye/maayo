@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
-import { DuplicateMutationError, type BatchMutationsResponse, type Mutation } from '@maayo/protocol';
+import { DuplicateMutationError, type BatchMutationsResponse, type ChangesResponse, type Mutation } from '@maayo/protocol';
 import type { ChannelAuthorizer, MaayoStore, SavedMutation } from './interfaces';
 import { MaayoModule } from './maayo.module';
 
@@ -68,6 +68,58 @@ describe('MaayoModule HTTP boundary', () => {
     expect(response.body.rejected.map(({ id }) => id)).toEqual([deniedId, reservedId]);
     expect(store.saveCalls).toBe(0);
     expect(store.persisted.size).toBe(0);
+  });
+
+  it('rejects a timestamp-only continuation over HTTP', async () => {
+    const baseUrl = await startApplication(new ConcurrentUniqueStore());
+    const response = await fetch(
+      `${baseUrl}/sync/changes?channel=org%3Awire&since=2026-09-02T00%3A00%3A00.000Z`,
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects an invalid continuation timestamp over HTTP', async () => {
+    const baseUrl = await startApplication(new TiedCursorStore());
+    const response = await fetch(
+      `${baseUrl}/sync/changes?channel=org%3Awire&since=not-a-date&lastMutationId=01ABCDEFGHJKMNPQRSTVWXYZA1`,
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it('fails explicitly when a legacy store receives a compound continuation', async () => {
+    const baseUrl = await startApplication(new ConcurrentUniqueStore());
+    const response = await fetch(
+      `${baseUrl}/sync/changes?channel=org%3Awire&since=2026-09-02T00%3A00%3A00.000Z&lastMutationId=01ABCDEFGHJKMNPQRSTVWXYZA1`,
+    );
+
+    expect(response.status).toBe(501);
+  });
+
+  it('pages tied timestamps exactly once through the compound store seam', async () => {
+    const store = new TiedCursorStore();
+    const baseUrl = await startApplication(store);
+    const received: string[] = [];
+    let since: string | null = null;
+    let lastMutationId: string | null = null;
+    let hasMore = true;
+
+    while (hasMore && received.length <= store.ids.length) {
+      const params = new URLSearchParams({ channel: 'org:cursor', limit: '1' });
+      if (since) params.set('since', since);
+      if (lastMutationId) params.set('lastMutationId', lastMutationId);
+      const response = await fetch(`${baseUrl}/sync/changes?${params}`);
+      expect(response.status).toBe(200);
+      const body = await response.json() as ChangesResponse;
+      received.push(...body.mutations.map(({ id }) => id));
+      since = body.cursor.lastReceivedAt;
+      lastMutationId = body.cursor.lastMutationId;
+      hasMore = body.hasMore;
+    }
+
+    expect(received).toEqual(store.ids);
+    expect(new Set(received).size).toBe(store.ids.length);
   });
 });
 
@@ -137,5 +189,32 @@ class ConcurrentUniqueStore implements MaayoStore {
 
   async findChanges(): Promise<SavedMutation[]> {
     return [];
+  }
+}
+
+class TiedCursorStore implements MaayoStore {
+  readonly ids = [
+    '01ABCDEFGHJKMNPQRSTVWXYZA1',
+    '01ABCDEFGHJKMNPQRSTVWXYZA2',
+    '01ABCDEFGHJKMNPQRSTVWXYZA3',
+  ];
+  private readonly receivedAt = new Date('2026-09-02T00:00:00.000Z');
+  private readonly rows = this.ids.map((id) => ({ mutation: makeMutation(id), receivedAt: this.receivedAt }));
+
+  async existsById(): Promise<boolean> { return false; }
+  async saveAll(): Promise<SavedMutation[]> { return []; }
+  async findChanges(_channel: string, since: Date | null, limit: number): Promise<SavedMutation[]> {
+    return this.rows.filter((row) => !since || row.receivedAt > since).slice(0, limit);
+  }
+  async findChangesByCursor(
+    _channel: string,
+    since: Date,
+    lastMutationId: string,
+    limit: number,
+  ): Promise<SavedMutation[]> {
+    return this.rows.filter((row) => (
+      row.receivedAt > since
+      || (row.receivedAt.getTime() === since.getTime() && row.mutation.id > lastMutationId)
+    )).slice(0, limit);
   }
 }

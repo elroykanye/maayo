@@ -184,12 +184,21 @@ describe('ChangesController', () => {
     expect(result.cursor).toEqual({ lastMutationId: null, lastReceivedAt: null });
   });
 
-  it('passes since and limit+1 to store for pagination probe', async () => {
-    await ctrl.pull('org:abc', '2026-01-01T00:00:00Z', '10');
+  it('passes the compound cursor and limit+1 to store for pagination probe', async () => {
+    const findChangesByCursor = vi.fn().mockResolvedValue([]);
+    store = makeStore({ findChangesByCursor });
+    ctrl = new ChangesController(makeOptions(store));
+    await ctrl.pull(
+      'org:abc',
+      '2026-01-01T00:00:00Z',
+      '01ABCDEFGHJKMNPQRSTVWXYZ99',
+      '10',
+    );
 
-    expect(store.findChanges).toHaveBeenCalledWith(
+    expect(findChangesByCursor).toHaveBeenCalledWith(
       'org:abc',
       new Date('2026-01-01T00:00:00Z'),
+      '01ABCDEFGHJKMNPQRSTVWXYZ99',
       11,
     );
   });
@@ -199,7 +208,7 @@ describe('ChangesController', () => {
     store = makeStore({ findChanges: vi.fn().mockResolvedValue(rows) });
     ctrl = new ChangesController(makeOptions(store, { defaultLimit: 5 }));
 
-    const result = await ctrl.pull('org:abc', undefined, '5');
+    const result = await ctrl.pull('org:abc', undefined, undefined, '5');
 
     expect(result.hasMore).toBe(true);
     expect(result.mutations).toHaveLength(5);

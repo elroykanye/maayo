@@ -71,6 +71,7 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
   router.get('/changes', async (req, res) => {
     const channel = req.query['channel'] as string;
     const since = req.query['since'] as string | undefined;
+    const lastMutationId = req.query['lastMutationId'] as string | undefined;
     const limitStr = req.query['limit'] as string | undefined;
 
     if (authorizer && !(await authorizer.canPull(req, channel))) {
@@ -79,8 +80,28 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
     }
 
     const limit = clamp(parseInt(limitStr ?? String(defaultLimit), 10) || defaultLimit, 1, 2000);
-    const sinceDate = since ? new Date(since) : null;
-    const rows = await store.findChanges(channel, sinceDate, limit + 1);
+    const hasSince = typeof since === 'string' && since.trim().length > 0;
+    const hasLastMutationId = typeof lastMutationId === 'string' && lastMutationId.trim().length > 0;
+    if (hasSince !== hasLastMutationId) {
+      res.status(400).json({ error: 'since and lastMutationId must be provided together' });
+      return;
+    }
+
+    let rows: SavedMutation[];
+    if (hasSince && hasLastMutationId) {
+      const sinceDate = new Date(since);
+      if (Number.isNaN(sinceDate.getTime())) {
+        res.status(400).json({ error: 'since must be a valid ISO-8601 timestamp' });
+        return;
+      }
+      if (!store.findChangesByCursor) {
+        res.status(501).json({ error: 'store does not support compound-cursor pagination' });
+        return;
+      }
+      rows = await store.findChangesByCursor(channel, sinceDate, lastMutationId, limit + 1);
+    } else {
+      rows = await store.findChanges(channel, null, limit + 1);
+    }
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;

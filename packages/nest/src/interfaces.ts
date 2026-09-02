@@ -10,6 +10,13 @@ export interface MaayoStore {
   saveAll(mutations: Mutation[]): Promise<SavedMutation[]>;
   /** Return mutations for channel and all sub-channels, since date, capped at limit. */
   findChanges(channel: string, since: Date | null, limit: number): Promise<SavedMutation[]>;
+  /** Continue after a compound (receivedAt, mutationId) cursor, in ascending order. */
+  findChangesByCursor?(
+    channel: string,
+    since: Date,
+    lastMutationId: string,
+    limit: number,
+  ): Promise<SavedMutation[]>;
 }
 
 export interface ChannelAuthorizer {
