@@ -1,6 +1,7 @@
 package dev.maayo.spring.api
 
 import dev.maayo.spring.ChannelAuthorizer
+import dev.maayo.spring.DuplicateMutationException
 import dev.maayo.spring.MaayoRepository
 import dev.maayo.spring.SavedMutation
 import org.springframework.http.HttpStatus
@@ -57,7 +58,7 @@ class MutationController(
         if (toSave.isNotEmpty()) {
             try {
                 acceptSaved(repository.saveAll(toSave), accepted)
-            } catch (error: RuntimeException) {
+            } catch (error: DuplicateMutationException) {
                 val remaining = mutableListOf<Mutation>()
                 toSave.forEach { mutation ->
                     if (repository.existsById(mutation.id)) {

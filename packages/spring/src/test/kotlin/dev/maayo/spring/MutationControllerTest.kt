@@ -40,6 +40,37 @@ class MutationControllerTest {
     }
 
     @Test
+    fun `unrelated failure remains visible when a coincidental id appears concurrently`() {
+        val raced = mutation("01HTEST0000000000000000024")
+        val unrelated = mutation("01HTEST0000000000000000025")
+        val failure = IllegalStateException("database offline")
+        val persisted = mutableSetOf<String>()
+        var saveCalls = 0
+        val repository = object : MaayoRepository {
+            override fun existsById(id: String) = id in persisted
+            override fun saveAll(mutations: List<Mutation>): List<SavedMutation> {
+                saveCalls++
+                if (saveCalls == 1) {
+                    persisted += raced.id
+                    throw failure
+                }
+                persisted += mutations.map { it.id }
+                return mutations.map { SavedMutation(it, Instant.parse("2026-09-02T00:00:00Z")) }
+            }
+            override fun findChanges(channel: String, since: Instant?, limit: Int) = emptyList<SavedMutation>()
+        }
+        val controller = MutationController(repository, PermitAllChannelAuthorizer())
+
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            controller.push(BatchMutationsRequest(listOf(raced, unrelated)), null)
+        }
+
+        assertEquals(failure, thrown)
+        assertEquals(1, saveCalls)
+        assertEquals(false, unrelated.id in persisted)
+    }
+
+    @Test
     fun `conflicting duplicate ids use one coherent first-entry outcome`() {
         val saved = mutableListOf<Mutation>()
         val repository = object : MaayoRepository {
@@ -98,7 +129,7 @@ class MutationControllerTest {
             saveCalls++
             if (saveCalls == 1) {
                 persisted += racedId
-                throw IllegalStateException("unique constraint")
+                throw DuplicateMutationException()
             }
             retryIds = mutations.map { it.id }
             persisted += retryIds

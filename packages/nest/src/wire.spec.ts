@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
-import type { BatchMutationsResponse, Mutation } from '@maayo/protocol';
+import { DuplicateMutationError, type BatchMutationsResponse, type Mutation } from '@maayo/protocol';
 import type { ChannelAuthorizer, MaayoStore, SavedMutation } from './interfaces';
 import { MaayoModule } from './maayo.module';
 
@@ -128,7 +128,7 @@ class ConcurrentUniqueStore implements MaayoStore {
       await this.gate;
     }
     if (mutations.some(({ id }) => this.persisted.has(id))) {
-      throw new Error('unique constraint');
+      throw new DuplicateMutationError();
     }
     const rows = mutations.map((mutation) => ({ mutation, receivedAt: new Date() }));
     rows.forEach((row) => this.persisted.set(row.mutation.id, row));

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Mutation } from '@maayo/protocol';
+import { DuplicateMutationError, type Mutation } from '@maayo/protocol';
 import type { MaayoStore, SavedMutation } from './interfaces';
 import { maayoRouter } from './router';
 
@@ -114,7 +114,7 @@ describe('maayoRouter — POST /mutations', () => {
       saveAll: vi.fn()
         .mockImplementationOnce(async () => {
           persisted.add(raced.id);
-          throw new Error('unique constraint');
+          throw new DuplicateMutationError();
         })
         .mockImplementation(async (ms: Mutation[]) => {
           ms.forEach((m) => persisted.add(m.id));
@@ -141,6 +141,34 @@ describe('maayoRouter — POST /mutations', () => {
       mockReq({ mutations: [mutation('01ULID0000000000000000013')] }),
       mockRes(),
     )).rejects.toBe(failure);
+  });
+
+  it('does not hide an unrelated failure when a coincidental id appears concurrently', async () => {
+    const raced = mutation('01ULID0000000000000000014');
+    const unrelated = mutation('01ULID0000000000000000015');
+    const failure = new Error('database offline');
+    const persisted = new Set<string>();
+    const saveAll = vi.fn(async (mutations: Mutation[]) => {
+      if (saveAll.mock.calls.length === 1) {
+        persisted.add(raced.id);
+        throw failure;
+      }
+      mutations.forEach((mutation) => persisted.add(mutation.id));
+      return mutations.map(saved);
+    });
+    const store = makeStore({
+      existsById: vi.fn(async (id: string) => persisted.has(id)),
+      saveAll,
+    });
+    const router = maayoRouter({ store });
+    const handler = (router.stack[0] as unknown as RouteLayer).route.stack[0].handle;
+
+    await expect(handler(
+      mockReq({ mutations: [raced, unrelated] }),
+      mockRes(),
+    )).rejects.toBe(failure);
+    expect(saveAll).toHaveBeenCalledTimes(1);
+    expect(persisted.has(unrelated.id)).toBe(false);
   });
 });
 

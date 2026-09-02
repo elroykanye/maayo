@@ -41,6 +41,12 @@ interface MaayoRepository {
     }
 }
 
+/** Raised only when a mutation id loses an atomic persistence uniqueness race. */
+class DuplicateMutationException(
+    message: String = "Mutation id already exists",
+    cause: Throwable? = null,
+) : RuntimeException(message, cause)
+
 data class SavedMutation(
     val mutation: Mutation,
     val receivedAt: Instant,
