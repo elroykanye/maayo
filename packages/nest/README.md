@@ -81,7 +81,8 @@ export class TypeOrmMaayoStore implements MaayoStore {
 
 `saveAll` must enforce a unique mutation-ID constraint atomically. If that specific constraint
 loses a race, translate the database error to `DuplicateMutationError`; do not translate connection,
-transaction, or other persistence failures.
+transaction, or other persistence failures. The adapter re-reads and retries the unresolved subset
+while each typed conflict makes progress, so repeated overlapping races still preserve unrelated rows.
 
 ### 2. Register `MaayoModule` in your app
 

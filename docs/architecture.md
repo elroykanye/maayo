@@ -187,7 +187,7 @@ readonly students = syncCollection<Student>('student');
 ### Server setup (Spring Boot)
 ```kotlin
 // build.gradle.kts
-implementation("dev.maayo:maayo-spring:0.1.2")
+implementation("dev.maayo:maayo-spring:0.3.1")
 ```
 Two controllers wired automatically. Done.
 

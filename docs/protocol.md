@@ -106,7 +106,8 @@ quarantined immediately instead of burning its retry budget.
 - **Idempotent**: if `id` already exists, re-accept it without saving again.
 - **Atomic duplicate recovery**: persistence adapters recover only a known unique-ID conflict.
   Express and Nest stores signal that case with `DuplicateMutationError`; Spring repositories use
-  `DuplicateMutationException`. Other persistence failures must remain errors.
+  `DuplicateMutationException`. If another ID races during recovery, adapters retry only while the
+  unresolved set shrinks; a conflict with no progress and all other persistence failures remain errors.
 - **Validate**: reject mutations with a blank `id`.
 - **Authorise**: optionally check the caller is allowed to push to `channel`.
 - **Atomic per mutation**: partial success is fine — the client retries only rejected IDs.

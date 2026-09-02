@@ -172,7 +172,9 @@ continuation is requested. Custom repositories must override it with ordering an
 `(receivedAt, mutation.id)` before serving continuation pages.
 
 `saveAll` implementations should throw `DuplicateMutationException` only for a mutation-ID unique
-constraint race. The controller recovers that typed conflict; unrelated persistence failures remain visible.
+constraint race. The controller re-reads the remaining IDs and retries while each conflict makes
+progress, so overlapping races do not strand unrelated rows. A typed conflict with no newly visible
+duplicate is rethrown; unrelated persistence failures remain visible.
 
 ---
 
@@ -232,7 +234,10 @@ CREATE TABLE maayo_mutation (
 CREATE INDEX idx_maayo_channel_received_id ON maayo_mutation (channel, received_at, maayo_id);
 ```
 
-This schema is compatible with any SQL database (Postgres, MySQL, SQLite, H2).
+The logical schema works across SQL databases, but this DDL uses PostgreSQL-style identity syntax;
+adapt identity and timestamp types in host-managed MySQL, SQLite, or H2 migrations. The bundled JPA
+adapter translates PostgreSQL/H2 SQLSTATE `23505` and MySQL/MariaDB error `1062` to the typed
+duplicate conflict without treating other integrity violations as duplicates.
 
 ---
 
