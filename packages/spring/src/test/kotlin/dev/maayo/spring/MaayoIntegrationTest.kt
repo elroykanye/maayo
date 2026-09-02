@@ -99,6 +99,30 @@ class MaayoIntegrationTest {
     }
 
     @Test
+    fun `POST sync mutations saves a duplicate id only once within one request`() {
+        val mutation = Mutation(
+            id = "01HTEST0000000000000000020",
+            channel = "org:test",
+            entityType = "Student",
+            entityId = "stu-020",
+            op = "CREATE",
+            payload = "{}",
+            authorIdentityId = "user-1",
+            deviceId = "device-1",
+            clientTs = "2026-01-01T00:00:00Z",
+        )
+        val result = mvc.post("/sync/mutations") {
+            contentType = MediaType.APPLICATION_JSON
+            content = mapper.writeValueAsString(BatchMutationsRequest(listOf(mutation, mutation)))
+        }.andExpect { status { isOk() } }.andReturn()
+
+        val response = mapper.readValue(result.response.contentAsString, BatchMutationsResponse::class.java)
+        assertEquals(1, response.accepted.size)
+        assertEquals(0, response.rejected.size)
+        assertTrue(repository.existsById(mutation.id))
+    }
+
+    @Test
     fun `GET sync changes returns pushed mutations for the channel`() {
         val id = "01HTEST0000000000000000003"
         mvc.post("/sync/mutations") {
@@ -143,6 +167,107 @@ class MaayoIntegrationTest {
     }
 
     @Test
+    fun `GET sync changes treats SQL wildcard characters as literal channel data`() {
+        val mutations = listOf(
+            Mutation("01HTEST0000000000000000030", "org:a_b/private", "Student", "literal-underscore",
+                "CREATE", "{}", "u1", "d1", "2026-01-01T00:00:00Z"),
+            Mutation("01HTEST0000000000000000031", "org:axb/private", "Student", "wildcard-underscore",
+                "CREATE", "{}", "u1", "d1", "2026-01-01T00:00:00Z"),
+            Mutation("01HTEST0000000000000000032", "org:a%b/private", "Student", "literal-percent",
+                "CREATE", "{}", "u1", "d1", "2026-01-01T00:00:00Z"),
+            Mutation("01HTEST0000000000000000033", "org:anything/private", "Student", "wildcard-percent",
+                "CREATE", "{}", "u1", "d1", "2026-01-01T00:00:00Z"),
+        )
+        mvc.post("/sync/mutations") {
+            contentType = MediaType.APPLICATION_JSON
+            content = mapper.writeValueAsString(BatchMutationsRequest(mutations))
+        }.andExpect { status { isOk() } }
+
+        val underscore = mvc.get("/sync/changes") {
+            param("channel", "org:a_b")
+        }.andExpect { status { isOk() } }.andReturn()
+        val underscoreIds = mapper.readValue(
+            underscore.response.contentAsString,
+            ChangesResponse::class.java,
+        ).mutations.map { it.id }.toSet()
+
+        val percent = mvc.get("/sync/changes") {
+            param("channel", "org:a%b")
+        }.andExpect { status { isOk() } }.andReturn()
+        val percentIds = mapper.readValue(
+            percent.response.contentAsString,
+            ChangesResponse::class.java,
+        ).mutations.map { it.id }.toSet()
+
+        assertEquals(setOf("01HTEST0000000000000000030"), underscoreIds)
+        assertEquals(setOf("01HTEST0000000000000000032"), percentIds)
+    }
+
+    @Test
+    fun `GET sync changes returns tied timestamp mutations exactly once across pages`() {
+        val ids = listOf(
+            "01HTEST0000000000000000010",
+            "01HTEST0000000000000000011",
+            "01HTEST0000000000000000012",
+        )
+        val mutations = ids.map { id ->
+            Mutation(
+                id,
+                "org:pagination",
+                "Student",
+                "student-$id",
+                "CREATE",
+                "{}",
+                "user-1",
+                "device-1",
+                "2026-01-01T00:00:00Z",
+            )
+        }
+        mvc.post("/sync/mutations") {
+            contentType = MediaType.APPLICATION_JSON
+            content = mapper.writeValueAsString(BatchMutationsRequest(mutations))
+        }.andExpect { status { isOk() } }
+
+        val received = mutableListOf<String>()
+        var since: String? = null
+        var lastMutationId: String? = null
+        var hasMore: Boolean
+        do {
+            val result = mvc.get("/sync/changes") {
+                param("channel", "org:pagination")
+                param("limit", "1")
+                since?.let { param("since", it) }
+                lastMutationId?.let { param("lastMutationId", it) }
+            }.andExpect { status { isOk() } }.andReturn()
+            val response = mapper.readValue(result.response.contentAsString, ChangesResponse::class.java)
+            received += response.mutations.map { it.id }
+            since = response.cursor.lastReceivedAt
+            lastMutationId = response.cursor.lastMutationId
+            hasMore = response.hasMore
+        } while (hasMore && received.size <= ids.size)
+
+        assertEquals(ids, received)
+        assertEquals(ids.size, received.toSet().size)
+    }
+
+    @Test
+    fun `GET sync changes rejects timestamp-only continuation`() {
+        mvc.get("/sync/changes") {
+            param("channel", "org:pagination")
+            param("since", "2026-09-02T00:00:00Z")
+        }.andExpect { status { isBadRequest() } }
+    }
+
+    @Test
+    fun `GET sync changes rejects invalid continuation timestamp`() {
+        mvc.get("/sync/changes") {
+            param("channel", "org:pagination")
+            param("since", "not-a-date")
+            param("lastMutationId", "01HPAGINATION0000000000001")
+        }.andExpect { status { isBadRequest() } }
+    }
+
+    @Test
     fun `POST sync mutations rejects blank id`() {
         val request = BatchMutationsRequest(listOf(
             Mutation("", "org:test", "Student", "x", "CREATE", "{}", "u", "d", "2026-01-01T00:00:00Z")
@@ -155,5 +280,32 @@ class MaayoIntegrationTest {
         val response = mapper.readValue(result.response.contentAsString, BatchMutationsResponse::class.java)
         assertEquals(1, response.rejected.size)
         assertEquals(0, response.accepted.size)
+    }
+
+    @Test
+    fun `POST sync mutations rejects reserved system author`() {
+        val request = BatchMutationsRequest(listOf(
+            Mutation(
+                "01HTEST0000000000000000005",
+                "org:test",
+                "Student",
+                "x",
+                "CREATE",
+                "{}",
+                "system",
+                "d",
+                "2026-01-01T00:00:00Z",
+            )
+        ))
+        val result = mvc.post("/sync/mutations") {
+            contentType = MediaType.APPLICATION_JSON
+            content = mapper.writeValueAsString(request)
+        }.andExpect { status { isOk() } }.andReturn()
+
+        val response = mapper.readValue(result.response.contentAsString, BatchMutationsResponse::class.java)
+        assertEquals(0, response.accepted.size)
+        assertEquals(1, response.rejected.size)
+        assertEquals("reserved_author", response.rejected[0].code)
+        assertFalse(repository.existsById("01HTEST0000000000000000005"))
     }
 }

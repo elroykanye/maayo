@@ -24,7 +24,7 @@ Maayo is database-agnostic. Implement the `MaayoStore` interface using any ORM:
 ```ts
 import { Injectable } from '@nestjs/common';
 import type { MaayoStore, SavedMutation } from '@maayo/nest';
-import type { Mutation } from '@maayo/protocol';
+import { DuplicateMutationError, type Mutation } from '@maayo/protocol';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { MutationRecord } from './mutation-record.entity';
@@ -49,15 +49,42 @@ export class TypeOrmMaayoStore implements MaayoStore {
 
   async findChanges(channel: string, since: Date | null, limit: number): Promise<SavedMutation[]> {
     const qb = this.repo.createQueryBuilder('m')
-      .where('m.channel = :ch OR m.channel LIKE :prefix', { ch: channel, prefix: `${channel}/%` })
+      .where('(m.channel = :ch OR m.channel LIKE :prefix)', { ch: channel, prefix: `${channel}/%` })
       .orderBy('m.receivedAt', 'ASC')
+      .addOrderBy('m.maayoId', 'ASC')
       .limit(limit);
     if (since) qb.andWhere('m.receivedAt > :since', { since });
     const records = await qb.getMany();
     return records.map(r => ({ mutation: r as unknown as Mutation, receivedAt: r.receivedAt }));
   }
+
+  async findChangesByCursor(
+    channel: string,
+    since: Date,
+    lastMutationId: string,
+    limit: number,
+  ): Promise<SavedMutation[]> {
+    const records = await this.repo.createQueryBuilder('m')
+      .where('(m.channel = :ch OR m.channel LIKE :prefix)', { ch: channel, prefix: `${channel}/%` })
+      .andWhere('(m.receivedAt > :since OR (m.receivedAt = :since AND m.maayoId > :lastMutationId))', {
+        since,
+        lastMutationId,
+      })
+      .orderBy('m.receivedAt', 'ASC')
+      .addOrderBy('m.maayoId', 'ASC')
+      .limit(limit)
+      .getMany();
+    return records.map(r => ({ mutation: r as unknown as Mutation, receivedAt: r.receivedAt }));
+  }
 }
 ```
+
+`saveAll` must enforce a unique mutation-ID constraint atomically. If that specific constraint
+loses a race, translate the database error to `DuplicateMutationError`; do not translate connection,
+transaction, or other persistence failures. The adapter re-reads and retries the unresolved subset
+while each typed conflict makes progress, so repeated overlapping races still preserve unrelated rows.
+The adapter uses the protocol package's stable error discriminator, so a CommonJS store and ESM
+adapter (or the reverse) do not need to share the same JavaScript constructor instance.
 
 ### 2. Register `MaayoModule` in your app
 
@@ -107,7 +134,12 @@ That's it. Your NestJS app now serves:
 |--------|-------------|
 | `existsById(id)` | Return true if the ULID was already accepted (idempotency check) |
 | `saveAll(mutations)` | Persist a batch; return each with a server-assigned `receivedAt` |
-| `findChanges(channel, since, limit)` | Return mutations for channel and all sub-channels, since date, capped at limit |
+| `findChanges(channel, since, limit)` | Return the first page for a channel and sub-channels, ordered by `(receivedAt, id)` |
+| `findChangesByCursor(channel, since, lastMutationId, limit)` | Optional source-compatible seam required for continuation pages; continue strictly after the pair |
+
+The endpoint accepts either neither cursor field or both `since` and `lastMutationId`. Incomplete or
+invalid cursors return `400`. A continuation against a store without `findChangesByCursor` returns
+`501` rather than falling back to timestamp-only pagination.
 
 ### `ChannelAuthorizer` interface
 

@@ -90,7 +90,10 @@ should REJECT pushed mutations claiming this author.
 }
 ```
 
-Every mutation in the request must appear in exactly one of `accepted` or `rejected`.
+Every distinct mutation ID in the request must appear in exactly one of `accepted` or `rejected`.
+If an ID occurs more than once, the first occurrence controls validation and authorization; later
+occurrences are ignored. Response IDs must belong to the submitted batch, and an ID may not appear
+in both arrays.
 
 A rejection carries a human-readable `reason` (safe to surface in a UI) and an
 optional machine-readable `code`. Codes let the client distinguish PERMANENT
@@ -101,6 +104,12 @@ quarantined immediately instead of burning its retry budget.
 ### Server contract
 
 - **Idempotent**: if `id` already exists, re-accept it without saving again.
+- **Atomic duplicate recovery**: persistence adapters recover only a known unique-ID conflict.
+  Express and Nest stores signal that case with `DuplicateMutationError`; Spring repositories use
+  `DuplicateMutationException`. If another ID races during recovery, adapters retry only while the
+  unresolved set shrinks; a conflict with no progress and all other persistence failures remain errors.
+  Node adapters recognize the error's stable `MAAYO_DUPLICATE_MUTATION` discriminator rather than
+  `instanceof`, so mixed ESM/CommonJS dependency graphs preserve the contract.
 - **Validate**: reject mutations with a blank `id`.
 - **Authorise**: optionally check the caller is allowed to push to `channel`.
 - **Atomic per mutation**: partial success is fine — the client retries only rejected IDs.
@@ -126,7 +135,7 @@ Pull server-side mutations for a channel since a cursor.
 ### Request
 
 ```http
-GET /sync/changes?channel=org:abc/school:xyz&since=2026-01-15T08:00:00Z&limit=500
+GET /sync/changes?channel=org:abc/school:xyz&since=2026-01-15T08:00:00Z&lastMutationId=01ARZ3NDEKTSV4RRFFQ69G5FAV&limit=500
 Authorization: Bearer <token>
 ```
 
@@ -135,7 +144,8 @@ Authorization: Bearer <token>
 | Param | Required | Description |
 |-------|----------|-------------|
 | `channel` | yes | Channel to pull from |
-| `since` | no | ISO-8601 — return only mutations received after this time |
+| `since` | no | ISO-8601 timestamp from the previous cursor; must be supplied together with `lastMutationId` |
+| `lastMutationId` | no | Mutation ID from the previous cursor; must be supplied together with `since` |
 | `limit` | no | Max mutations per page (server default: 500, max: 2000) |
 
 ### Response `200 OK`
@@ -155,7 +165,10 @@ Authorization: Bearer <token>
 ### Server contract
 
 - **Hierarchy**: return mutations whose channel equals `channel` **or** starts with `channel/`. Pulling `org:abc` includes `org:abc/school:xyz/...`.
-- **Ordered**: return mutations ascending by `receivedAt`.
+- **Ordered**: return mutations ascending by `(receivedAt, id)`.
+- **Compound continuation**: continue strictly after `(since, lastMutationId)`. A first pull omits
+  both fields. Incomplete or invalid cursors return `400`; Express/Nest stores that do not implement
+  the compound cursor seam return `501` rather than silently skipping tied rows.
 - **Paginated**: if more rows exist beyond `limit`, set `hasMore: true`. The client will immediately re-pull.
 - **Authorise**: return `403` if the caller is not allowed to pull from `channel`.
 

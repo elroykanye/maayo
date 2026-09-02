@@ -49,7 +49,7 @@ Channels are hierarchical: pulling `org:abc` also includes `org:abc/*` data.
 ### 3. Push / Pull cycle
 ```
 push:  _outbox rows → POST /sync/mutations → server acks → delete from outbox
-pull:  GET /sync/changes?channel=...&since=<cursor> → apply to local tables → update cursor
+pull:  GET /sync/changes?channel=...&since=<time>&lastMutationId=<id> → apply → update cursor
 ```
 Push and pull are independent loops. A failed push blocks nothing; a failed
 pull retries on the next cycle.
@@ -60,8 +60,9 @@ Conflict resolution is LWW by `updatedAt`. Remote mutations with an older
 majority of school/management data access patterns.
 
 ### 5. Cursors
-Each channel tracks a `lastReceivedAt` cursor in `_cursors`. Pull resumes
-from the cursor, so incremental syncs are cheap. First pull is a full catch-up.
+Each channel tracks a compound `(lastReceivedAt, lastMutationId)` cursor in `_cursors`. Pull
+resumes strictly after the pair, so equal timestamps cannot disappear between pages. First pull
+omits both values and is a full catch-up.
 
 ---
 
@@ -94,7 +95,7 @@ Response: {
 
 ### GET /sync/changes
 ```
-Query:    channel, since? (ISO-8601), limit? (default 500)
+Query:    channel, since? + lastMutationId? (paired continuation), limit? (default 500)
 Response: {
   channel: string;
   mutations: Mutation[];
@@ -113,6 +114,7 @@ maayo/
 │   │   └── src/
 │   │       ├── mutation.ts       — Mutation, BatchRequest, BatchResponse types
 │   │       ├── changes.ts        — ChangesResponse, Cursor types
+│   │       ├── errors.ts         — typed duplicate-persistence conflict
 │   │       └── index.ts
 │   │
 │   ├── client/            @maayo/client
@@ -145,8 +147,8 @@ maayo/
 │   │       ├── MaayoAutoConfiguration.kt
 │   │       └── MaayoProperties.kt
 │   │
-│   ├── nest/              @maayo/nest    (planned v0.2)
-│   └── express/           @maayo/express (planned v0.2)
+│   ├── nest/              @maayo/nest
+│   └── express/           @maayo/express
 │
 ├── docs/
 │   ├── architecture.md    (this file)
@@ -185,7 +187,7 @@ readonly students = syncCollection<Student>('student');
 ### Server setup (Spring Boot)
 ```kotlin
 // build.gradle.kts
-implementation("dev.maayo:maayo-spring:0.1.2")
+implementation("dev.maayo:maayo-spring:0.3.1")
 ```
 Two controllers wired automatically. Done.
 

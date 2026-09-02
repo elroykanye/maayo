@@ -9,7 +9,7 @@
     "build": {
       "executor": "nx:run-commands",
       "dependsOn": ["^build"],
-      "options": { "command": "tsc -p tsconfig.build.json", "cwd": "packages/express" },
+      "options": { "command": "pnpm run build", "cwd": "packages/express" },
       "outputs": ["{projectRoot}/dist"]
     },
     "test": {

@@ -3,9 +3,11 @@ package dev.maayo.spring.jpa
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import dev.maayo.spring.MaayoRepository
+import dev.maayo.spring.DuplicateMutationException
 import dev.maayo.spring.SavedMutation
 import dev.maayo.spring.api.Mutation
 import java.time.Instant
+import java.sql.SQLException
 
 class JpaMaayoRepository(
     private val jpa: MaayoMutationJpaRepository,
@@ -31,11 +33,54 @@ class JpaMaayoRepository(
                 receivedAt = now,
             )
         }
-        return jpa.saveAll(records).map { it.toSaved() }
+        return try {
+            jpa.saveAllAndFlush(records).map { it.toSaved() }
+        } catch (error: RuntimeException) {
+            if (error.hasDuplicateSqlState()) {
+                throw DuplicateMutationException(cause = error)
+            }
+            throw error
+        }
     }
 
     override fun findChanges(channel: String, since: Instant?, limit: Int): List<SavedMutation> =
-        jpa.findByChannelAndSince(channel, since, limit).map { it.toSaved() }
+        findChanges(channel, since, null, limit)
+
+    override fun findChanges(
+        channel: String,
+        since: Instant?,
+        lastMutationId: String?,
+        limit: Int,
+    ): List<SavedMutation> =
+        jpa.findByChannelAndCursor(
+            channel,
+            descendantPattern(channel),
+            since,
+            lastMutationId,
+            limit,
+        ).map { it.toSaved() }
+
+    private fun descendantPattern(channel: String): String = buildString {
+        channel.forEach { character ->
+            when (character) {
+                '!', '%', '_' -> append('!')
+            }
+            append(character)
+        }
+        append("/%")
+    }
+
+    private fun Throwable.hasDuplicateSqlState(): Boolean {
+        var current: Throwable? = this
+        while (current != null) {
+            if (current is SQLException && current.isDuplicateKey()) return true
+            current = current.cause
+        }
+        return false
+    }
+
+    private fun SQLException.isDuplicateKey(): Boolean =
+        sqlState == "23505" || (sqlState == "23000" && errorCode == 1062)
 
     private val listType = object : TypeReference<List<String>>() {}
 

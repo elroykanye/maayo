@@ -32,6 +32,8 @@ const engine = new SyncEngine({
   },
   authHeaders: () => ({ Authorization: `Bearer ${getToken()}` }),
   intervalMs: 10_000,  // sync every 10s, default
+  requestTimeoutMs: 30_000,
+  pushBatchSize: 100,
 });
 
 engine.start();
@@ -45,7 +47,8 @@ engine.start();
 |--------|-------------|
 | `new SyncEngine(config)` | Opens IndexedDB, does not start syncing yet |
 | `engine.start()` | Begin periodic sync loop |
-| `engine.stop()` | Stop sync loop (safe to call multiple times) |
+| `engine.stop()` | Stop the loop and abort the active cycle (safe to call multiple times) |
+| `engine.waitForIdle()` | Wait for an active or aborted cycle to finish cleanup |
 | `engine.sync()` | Run one push + pull cycle manually |
 | `engine.status` | `'idle' \| 'syncing' \| 'error' \| 'offline'` |
 | `engine.onStatusChange(fn)` | Subscribe to status changes, returns unsubscribe fn |
@@ -61,6 +64,11 @@ engine.start();
 | `tables` | `UserTableSchema` | Extra Dexie table definitions for your entities |
 | `authHeaders` | `() => Record<string, string>` | Called before each request |
 | `intervalMs` | `number` | Sync interval in ms, default `10_000` |
+| `requestTimeoutMs` | `number` | Headers-and-body deadline in ms, default `30_000`; timed-out rows remain queued |
+| `pushBatchSize` | `number` | Maximum ordered outbox rows per request, default `100` |
+
+`openDatabase()` caches live handles by name. Closing a handle evicts it so the next open returns a
+working replacement; incompatible table or migration options for an already-live name are rejected.
 
 ### Channel helpers
 

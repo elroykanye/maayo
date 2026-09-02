@@ -1,6 +1,7 @@
 {
   "name": "@maayo/client",
-  "version": "0.3.2",
+  "version": "0.3.3",
+  "type": "module",
   "description": "Offline-first sync client \u2014 Dexie outbox, push/pull engine, LWW conflict resolution",
   "keywords": [
     "offline-first",
@@ -23,7 +24,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsup --config ../../tsup.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -32,6 +33,7 @@
     "dexie": "^4.0.10"
   },
   "devDependencies": {
+    "@types/node": "^25.9.1",
     "@vitest/coverage-v8": "^4.0.9",
     "fake-indexeddb": "^6.2.5",
     "typescript": "~5.8.3",

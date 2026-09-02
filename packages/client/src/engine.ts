@@ -4,6 +4,7 @@ import { openDatabase } from './database';
 import { pending, markSynced, purgeSynced, recordRejection } from './outbox';
 import { pull, SyncHttpError, type ApplyMutationHook, type ApplyOutcome } from './pull';
 import { TabCoordinator } from './leader';
+import { fetchWithTimeout } from './transport';
 
 export interface SyncConfig {
   /** Your backend base URL, no trailing slash */
@@ -20,6 +21,10 @@ export interface SyncConfig {
   authHeaders?: () => Record<string, string> | Promise<Record<string, string>>;
   /** Push + pull interval in ms, default 10_000 */
   intervalMs?: number;
+  /** Abort an individual push or pull after this many milliseconds. Default 30_000. */
+  requestTimeoutMs?: number;
+  /** Maximum mutations per push request. The engine drains successive batches. Default 100. */
+  pushBatchSize?: number;
   /**
    * Called once per server-rejected mutation each time a push reports it (207
    * `rejected` entries). `quarantined` is true when this rejection took the row
@@ -67,6 +72,7 @@ export class SyncEngine {
   private _coordinator: TabCoordinator;
   private _started = false;
   private _syncInFlight: Promise<void> | null = null;
+  private _syncAbortController: AbortController | null = null;
 
   constructor(private readonly config: SyncConfig) {
     this.db = openDatabase(config.dbName, config.tables, config.migrations);
@@ -94,27 +100,26 @@ export class SyncEngine {
 
   private async _startAsync(): Promise<void> {
     await this._coordinator.waitForLeadership();
+    if (!this._started || !this._coordinator.isLeader) return;
     void this.sync();
     this._intervalId = setInterval(() => void this.sync(), this.config.intervalMs ?? 10_000);
   }
 
   stop(): void {
+    this._started = false;
     if (this._intervalId !== null) {
       clearInterval(this._intervalId);
       this._intervalId = null;
     }
+    this._syncAbortController?.abort(new DOMException('Sync stopped', 'AbortError'));
     this._coordinator.release();
-    this._started = false;
   }
 
   /**
-   * Resolves once no sync() call is in flight — immediately if none is. `stop()` only clears
-   * the interval timer and releases tab leadership; it does NOT cancel or wait for a sync that
-   * was already running when it was called. A consumer that's about to do something destructive
-   * to `db` right after stop() (deleting the database on logout, for example) MUST await this
-   * first, or the in-flight run's next `db.table()`/query throws Dexie's DatabaseClosedError
-   * once the delete completes underneath it — and if the delete finishes first, the in-flight
-   * pull can go on to write into a database that no longer exists.
+   * Resolves once no sync() call is in flight — immediately if none is. `stop()` aborts the
+   * active HTTP exchange, including response-body parsing, but does not synchronously join the
+   * promise. A consumer that will close or delete `db` after stopping must await this method so
+   * the aborted cycle has fully unwound before the database changes underneath it.
    */
   async waitForIdle(): Promise<void> {
     if (!this._syncInFlight) return;
@@ -158,18 +163,21 @@ export class SyncEngine {
    */
   async sync(): Promise<void> {
     if (this._syncInFlight) return this._syncInFlight;
-    this._syncInFlight = this._runSync().finally(() => {
+    const controller = new AbortController();
+    this._syncAbortController = controller;
+    this._syncInFlight = this._runSync(controller.signal).finally(() => {
       this._syncInFlight = null;
+      if (this._syncAbortController === controller) this._syncAbortController = null;
     });
     return this._syncInFlight;
   }
 
-  private async _runSync(): Promise<void> {
+  private async _runSync(signal: AbortSignal): Promise<void> {
     if (!navigator.onLine) { this._setStatus('offline'); return; }
     this._setStatus('syncing');
     try {
-      await this._push();
-      await this._pullAll();
+      await this._push(signal);
+      await this._pullAll(signal);
       await purgeSynced(this.db);
       this._setStatus('idle');
     } catch (err) {
@@ -185,39 +193,68 @@ export class SyncEngine {
     }
   }
 
-  private async _push(): Promise<void> {
-    const rows = await pending(this.db);
-    if (rows.length === 0) return;
+  private async _push(signal: AbortSignal): Promise<void> {
+    const requestedBatchSize = this.config.pushBatchSize ?? 100;
+    const normalizedBatchSize = Math.floor(requestedBatchSize);
+    const batchSize = Number.isFinite(requestedBatchSize) && normalizedBatchSize >= 1
+      ? normalizedBatchSize
+      : 100;
+    while (true) {
+      const rows = await pending(this.db, batchSize);
+      if (rows.length === 0) return;
 
-    const headers = await this._headers();
-    const resp = await fetch(`${this.config.baseUrl}/sync/mutations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({ mutations: rows }),
-    });
+      const headers = await this._headers();
+      const data = await fetchWithTimeout(`${this.config.baseUrl}/sync/mutations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ mutations: rows }),
+        signal,
+      }, async (resp) => {
+        if (!resp.ok) throw new SyncHttpError('push', resp.status, resp.statusText);
+        return resp.json() as Promise<BatchMutationsResponse>;
+      }, this.config.requestTimeoutMs);
+      const requestedIds = new Set(rows.map((row) => row.id));
+      const acceptedIds = data.accepted.map((accepted) => accepted.id);
+      const rejectedItems = data.rejected ?? [];
+      const foreignIds = [...acceptedIds, ...rejectedItems.map((rejection) => rejection.id)]
+        .filter((id) => !requestedIds.has(id));
+      if (foreignIds.length > 0) {
+        throw new Error(`Push response referenced mutation outside current request: ${[...new Set(foreignIds)].join(', ')}`);
+      }
+      const acceptedIdSet = new Set(acceptedIds);
+      const contradictoryIds = rejectedItems
+        .map((rejection) => rejection.id)
+        .filter((id) => acceptedIdSet.has(id));
+      if (contradictoryIds.length > 0) {
+        throw new Error(`Push response both accepted and rejected mutation: ${[...new Set(contradictoryIds)].join(', ')}`);
+      }
 
-    if (!resp.ok) throw new SyncHttpError('push', resp.status, resp.statusText);
-
-    const data: BatchMutationsResponse = await resp.json();
-    if (data.accepted.length > 0) {
-      const firstReceivedAt = data.accepted[0].receivedAt;
-      await markSynced(this.db, data.accepted.map((a) => a.id), firstReceivedAt);
-    }
-    // A 207 body can reject individual mutations. Ignoring them (the old
-    // behaviour) re-POSTed every rejected row on every cycle forever, invisibly.
-    // Each rejection now backs off exponentially and quarantines once its retry
-    // budget is spent (or immediately for permanent codes) — see outbox.ts.
-    for (const rejection of data.rejected ?? []) {
-      const recorded = await recordRejection(this.db, rejection, {
-        maxAttempts: this.config.maxRejectAttempts,
-        permanentCodes: this.config.permanentRejectCodes,
-      });
-      if (recorded && this.config.onReject) {
-        try {
-          this.config.onReject(rejection, recorded.row, recorded.quarantined);
-        } catch (err) {
-          console.error('[maayo] onReject callback failed', err);
+      const handledIds = new Set<string>();
+      if (data.accepted.length > 0) {
+        const firstReceivedAt = data.accepted[0].receivedAt;
+        acceptedIds.forEach((id) => handledIds.add(id));
+        await markSynced(this.db, acceptedIds, firstReceivedAt);
+      }
+      // A 207 body can reject individual mutations. Ignoring them (the old
+      // behaviour) re-POSTed every rejected row on every cycle forever, invisibly.
+      // Each rejection now backs off exponentially and quarantines once its retry
+      // budget is spent (or immediately for permanent codes) — see outbox.ts.
+      for (const rejection of rejectedItems) {
+        handledIds.add(rejection.id);
+        const recorded = await recordRejection(this.db, rejection, {
+          maxAttempts: this.config.maxRejectAttempts,
+          permanentCodes: this.config.permanentRejectCodes,
+        });
+        if (recorded && this.config.onReject) {
+          try {
+            this.config.onReject(rejection, recorded.row, recorded.quarantined);
+          } catch (err) {
+            console.error('[maayo] onReject callback failed', err);
+          }
         }
+      }
+      if (!rows.some((row) => handledIds.has(row.id))) {
+        throw new Error('Push response did not accept or reject any requested mutation');
       }
     }
   }
@@ -229,7 +266,7 @@ export class SyncEngine {
    * no reason. A caller with N channels (e.g. an admin with grants across many schools) was
    * paying for N channels' worth of network round-trips back to back instead of overlapped.
    */
-  private async _pullAll(): Promise<void> {
+  private async _pullAll(signal: AbortSignal): Promise<void> {
     const headers = await this._headers();
     await Promise.all(
       this.config.channels.map(async (channel) => {
@@ -239,6 +276,8 @@ export class SyncEngine {
             baseUrl: this.config.baseUrl,
             channel,
             headers,
+            requestTimeoutMs: this.config.requestTimeoutMs,
+            signal,
             softDelete: this.config.softDelete,
             applyMutation: this.config.applyMutation,
             onApplied: this.config.onApplied,
