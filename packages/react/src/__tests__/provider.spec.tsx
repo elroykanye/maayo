@@ -77,6 +77,7 @@ describe('SyncProvider configuration lifecycle', () => {
       <SyncProvider config={firstConfig}><Probe /></SyncProvider>,
     );
     const firstEngine = observed.at(-1)!;
+    const waitForIdleSpy = vi.spyOn(firstEngine, 'waitForIdle');
     await waitFor(() => expect(firstRequestSignal).toBeDefined());
     await waitFor(() => expect(
       setIntervalSpy.mock.calls.some((call) => call[1] === 60_000),
@@ -92,6 +93,9 @@ describe('SyncProvider configuration lifecycle', () => {
     await waitFor(() => expect(observed.at(-1)).not.toBe(firstEngine));
     const secondEngine = observed.at(-1)!;
 
+    expect(waitForIdleSpy).toHaveBeenCalledOnce();
+    expect((firstEngine as unknown as { _syncInFlight: Promise<void> | null })._syncInFlight)
+      .toBeNull();
     expect(firstRequestSignal?.aborted).toBe(true);
     expect(clearIntervalSpy).toHaveBeenCalledWith(firstInterval);
     expect(channels[0]?.closed).toBe(true);
