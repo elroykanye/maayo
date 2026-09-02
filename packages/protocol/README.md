@@ -5,7 +5,7 @@
 [![CI](https://github.com/elroykanye/maayo/actions/workflows/ci.yml/badge.svg)](https://github.com/elroykanye/maayo/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](https://github.com/elroykanye/maayo/blob/main/LICENSE)
 
-Shared TypeScript types for the [Maayo](https://github.com/elroykanye/maayo) offline-first sync protocol. Zero runtime dependencies — types only.
+Shared TypeScript contracts for the [Maayo](https://github.com/elroykanye/maayo) offline-first sync protocol. It has zero runtime dependencies and exports both types and `DuplicateMutationError`.
 
 ## Install
 
@@ -22,6 +22,8 @@ npm install @maayo/protocol
 | `BatchMutationsResponse` | Response with accepted/rejected mutations |
 | `ChangesResponse` | Body for `GET /sync/changes` |
 | `Cursor` | Pagination cursor returned with each changes page |
+| `ChangesQuery` | First-page query or a continuation with paired `since` and `lastMutationId` |
+| `DuplicateMutationError` | Runtime signal for an atomic mutation-ID uniqueness conflict |
 
 ## Protocol overview
 

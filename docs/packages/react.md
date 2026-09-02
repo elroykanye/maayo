@@ -16,7 +16,10 @@ pnpm add @maayo/react @maayo/client dexie
 
 ## `SyncProvider`
 
-Wrap your app (or a subtree) with `SyncProvider`. It creates and starts the `SyncEngine` on mount and stops it on unmount.
+Wrap your app (or a subtree) with `SyncProvider`. It creates and starts the `SyncEngine` on mount
+and stops it on unmount. When the `config` object identity changes, the provider keeps exposing the
+old engine until `stop()` and `waitForIdle()` finish, then creates and starts the replacement. Memoize
+configuration when its values have not changed.
 
 ```tsx
 import { SyncProvider, channelsFromGrants } from '@maayo/react';

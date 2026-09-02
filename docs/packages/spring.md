@@ -7,7 +7,7 @@ Spring Boot 3 server adapter for the Maayo offline-first sync protocol. Adds `PO
 ## Add the dependency
 
 ```kotlin
-implementation("dev.maayo:maayo-spring:0.1.0")
+implementation("dev.maayo:maayo-spring:0.3.1")
 ```
 
 Requires Spring Boot 3.x, Java 17+.
@@ -47,7 +47,7 @@ class JdbcMaayoRepository(private val jdbc: JdbcTemplate) : MaayoRepository {
         val sql = buildString {
             append("SELECT * FROM maayo_mutation WHERE (channel = ? OR channel LIKE ?)")
             if (since != null) append(" AND received_at > ?")
-            append(" ORDER BY received_at LIMIT ?")
+            append(" ORDER BY received_at, maayo_id LIMIT ?")
         }
         val args = buildList {
             add(channel); add("$channel/%")
@@ -55,6 +55,26 @@ class JdbcMaayoRepository(private val jdbc: JdbcTemplate) : MaayoRepository {
             add(limit)
         }
         return jdbc.query(sql, args.toTypedArray()) { rs, _ -> rs.toSaved() }
+    }
+
+    override fun findChanges(
+        channel: String,
+        since: Instant?,
+        lastMutationId: String?,
+        limit: Int,
+    ): List<SavedMutation> {
+        if (since == null || lastMutationId == null) return findChanges(channel, since, limit)
+        val sql = """
+            SELECT * FROM maayo_mutation
+            WHERE (channel = ? OR channel LIKE ?)
+              AND (received_at > ? OR (received_at = ? AND maayo_id > ?))
+            ORDER BY received_at, maayo_id
+            LIMIT ?
+        """.trimIndent()
+        return jdbc.query(
+            sql,
+            arrayOf(channel, "$channel/%", since, since, lastMutationId, limit),
+        ) { rs, _ -> rs.toSaved() }
     }
 }
 ```
@@ -86,7 +106,31 @@ class MongoMaayoRepository(private val mongo: MongoTemplate) : MaayoRepository {
             channelCriteria.and("receivedAt").gt(since)
         else
             channelCriteria
-        val query = Query(criteria).with(Sort.by("receivedAt")).limit(limit)
+        val query = Query(criteria).with(Sort.by("receivedAt", "maayoId")).limit(limit)
+        return mongo.find(query, MaayoDocument::class.java).map { it.toSaved() }
+    }
+
+    override fun findChanges(
+        channel: String,
+        since: Instant?,
+        lastMutationId: String?,
+        limit: Int,
+    ): List<SavedMutation> {
+        if (since == null || lastMutationId == null) return findChanges(channel, since, limit)
+        val channelCriteria = Criteria().orOperator(
+            Criteria.where("channel").`is`(channel),
+            Criteria.where("channel").regex("^${Regex.escape(channel)}/"),
+        )
+        val cursorCriteria = Criteria().orOperator(
+            Criteria.where("receivedAt").gt(since),
+            Criteria().andOperator(
+                Criteria.where("receivedAt").`is`(since),
+                Criteria.where("maayoId").gt(lastMutationId),
+            ),
+        )
+        val query = Query(Criteria().andOperator(channelCriteria, cursorCriteria))
+            .with(Sort.by("receivedAt", "maayoId"))
+            .limit(limit)
         return mongo.find(query, MaayoDocument::class.java).map { it.toSaved() }
     }
 }
@@ -109,12 +153,26 @@ interface MaayoRepository {
      * received after [since], ordered by receivedAt ASC, capped at [limit].
      */
     fun findChanges(channel: String, since: Instant?, limit: Int): List<SavedMutation>
+
+    /** Continue strictly after the compound (receivedAt, mutation id) cursor. */
+    fun findChanges(
+        channel: String,
+        since: Instant?,
+        lastMutationId: String?,
+        limit: Int,
+    ): List<SavedMutation>
 }
 
 data class SavedMutation(val mutation: Mutation, val receivedAt: Instant)
 ```
 
 Register any implementation as a Spring bean. Once a `MaayoRepository` bean is present, the controllers register automatically.
+The four-argument method has a source-compatible default, but that default throws when a compound
+continuation is requested. Custom repositories must override it with ordering and filtering by
+`(receivedAt, mutation.id)` before serving continuation pages.
+
+`saveAll` implementations should throw `DuplicateMutationException` only for a mutation-ID unique
+constraint race. The controller recovers that typed conflict; unrelated persistence failures remain visible.
 
 ---
 
@@ -171,7 +229,7 @@ CREATE TABLE maayo_mutation (
     received_at        TIMESTAMP    NOT NULL
 );
 
-CREATE INDEX idx_maayo_channel_received ON maayo_mutation (channel, received_at);
+CREATE INDEX idx_maayo_channel_received_id ON maayo_mutation (channel, received_at, maayo_id);
 ```
 
 This schema is compatible with any SQL database (Postgres, MySQL, SQLite, H2).
