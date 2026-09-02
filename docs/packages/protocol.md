@@ -82,7 +82,9 @@ interface ChangesQuery {
 
 Express and Nest stores throw this error only when an atomic persistence operation loses a
 mutation-ID uniqueness race. The adapters may then re-check IDs safely; unrelated database errors
-must not be wrapped as duplicates.
+must not be wrapped as duplicates. The class carries `code: "MAAYO_DUPLICATE_MUTATION"`, and
+`isDuplicateMutationError(error)` checks that stable discriminator so ESM, CommonJS, and duplicated
+package instances interoperate without relying on constructor identity.
 
 ## Usage
 

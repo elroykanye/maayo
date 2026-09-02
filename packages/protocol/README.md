@@ -24,6 +24,7 @@ npm install @maayo/protocol
 | `Cursor` | Pagination cursor returned with each changes page |
 | `ChangesQuery` | First-page query or a continuation with paired `since` and `lastMutationId` |
 | `DuplicateMutationError` | Runtime signal for an atomic mutation-ID uniqueness conflict |
+| `isDuplicateMutationError(error)` | Cross-ESM/CommonJS guard for the stable duplicate-conflict discriminator |
 
 ## Protocol overview
 

@@ -83,6 +83,8 @@ export class TypeOrmMaayoStore implements MaayoStore {
 loses a race, translate the database error to `DuplicateMutationError`; do not translate connection,
 transaction, or other persistence failures. The adapter re-reads and retries the unresolved subset
 while each typed conflict makes progress, so repeated overlapping races still preserve unrelated rows.
+The adapter uses the protocol package's stable error discriminator, so a CommonJS store and ESM
+adapter (or the reverse) do not need to share the same JavaScript constructor instance.
 
 ### 2. Register `MaayoModule` in your app
 

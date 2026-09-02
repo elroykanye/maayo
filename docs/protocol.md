@@ -108,6 +108,8 @@ quarantined immediately instead of burning its retry budget.
   Express and Nest stores signal that case with `DuplicateMutationError`; Spring repositories use
   `DuplicateMutationException`. If another ID races during recovery, adapters retry only while the
   unresolved set shrinks; a conflict with no progress and all other persistence failures remain errors.
+  Node adapters recognize the error's stable `MAAYO_DUPLICATE_MUTATION` discriminator rather than
+  `instanceof`, so mixed ESM/CommonJS dependency graphs preserve the contract.
 - **Validate**: reject mutations with a blank `id`.
 - **Authorise**: optionally check the caller is allowed to push to `channel`.
 - **Atomic per mutation**: partial success is fine — the client retries only rejected IDs.
