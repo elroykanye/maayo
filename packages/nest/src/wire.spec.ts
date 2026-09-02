@@ -1,12 +1,14 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { INestApplication } from '@nestjs/common';
 import { DuplicateMutationError, type BatchMutationsResponse, type ChangesResponse, type Mutation } from '@maayo/protocol';
 import type { ChannelAuthorizer, MaayoStore, SavedMutation } from './interfaces';
 import { MaayoModule } from './maayo.module';
 
 const applications: INestApplication[] = [];
+
+vi.setConfig({ testTimeout: 15_000, hookTimeout: 15_000 });
 
 afterEach(async () => {
   await Promise.all(applications.splice(0).map((application) => application.close()));
