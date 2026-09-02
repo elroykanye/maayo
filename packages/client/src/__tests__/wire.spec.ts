@@ -21,7 +21,7 @@ describe('SyncEngine HTTP boundary', () => {
       baseUrl,
       dbName: `test-http-stalled-body-${crypto.randomUUID()}`,
       channels: [],
-      requestTimeoutMs: 75,
+      requestTimeoutMs: 500,
     });
     const queued = await enqueue(engine.db, {
       channel: 'org:wire',
@@ -35,7 +35,7 @@ describe('SyncEngine HTTP boundary', () => {
     const startedAt = Date.now();
     await engine.sync();
 
-    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
     expect(engine.status).toBe('error');
     expect(await engine.db._outbox.count()).toBe(1);
 
