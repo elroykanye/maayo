@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { SyncEngine, type SyncConfig } from '@maayo/client';
 
 export const SyncContext = createContext<SyncEngine | null>(null);
@@ -9,14 +9,32 @@ export interface SyncProviderProps {
 }
 
 export function SyncProvider({ config, children }: SyncProviderProps) {
-  const engine = useMemo(() => new SyncEngine(config), [config]);
+  const [current, setCurrent] = useState(() => ({
+    config,
+    engine: new SyncEngine(config),
+  }));
 
   useEffect(() => {
-    engine.start();
-    return () => engine.stop();
-  }, [engine]);
+    if (current.config === config) return undefined;
 
-  return <SyncContext.Provider value={engine}>{children}</SyncContext.Provider>;
+    let cancelled = false;
+    current.engine.stop();
+    void current.engine.waitForIdle().then(() => {
+      if (!cancelled) {
+        setCurrent({ config, engine: new SyncEngine(config) });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [config, current]);
+
+  useEffect(() => {
+    current.engine.start();
+    return () => current.engine.stop();
+  }, [current.engine]);
+
+  return <SyncContext.Provider value={current.engine}>{children}</SyncContext.Provider>;
 }
 
 export function useSyncEngine(): SyncEngine {
