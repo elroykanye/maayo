@@ -131,6 +131,38 @@ describe('maayoRouter — POST /mutations', () => {
     expect((res._data.body as Record<string, unknown[]>).accepted).toHaveLength(2);
   });
 
+  it('recovers repeated duplicate races and still saves unrelated rows', async () => {
+    const first = mutation('01ULID0000000000000000021');
+    const second = mutation('01ULID0000000000000000022');
+    const unrelated = mutation('01ULID0000000000000000023');
+    const persisted = new Set<string>();
+    const saveAll = vi.fn(async (mutations: Mutation[]) => {
+      if (saveAll.mock.calls.length === 1) {
+        persisted.add(first.id);
+        throw new DuplicateMutationError();
+      }
+      if (saveAll.mock.calls.length === 2) {
+        persisted.add(second.id);
+        throw new DuplicateMutationError();
+      }
+      mutations.forEach((item) => persisted.add(item.id));
+      return mutations.map(saved);
+    });
+    const store = makeStore({
+      existsById: vi.fn(async (id: string) => persisted.has(id)),
+      saveAll,
+    });
+    const router = maayoRouter({ store });
+    const handler = (router.stack[0] as unknown as RouteLayer).route.stack[0].handle;
+    const res = mockRes();
+
+    await handler(mockReq({ mutations: [first, second, unrelated] }), res);
+
+    expect(saveAll).toHaveBeenNthCalledWith(2, [second, unrelated]);
+    expect(saveAll).toHaveBeenNthCalledWith(3, [unrelated]);
+    expect((res._data.body as Record<string, unknown[]>).accepted).toHaveLength(3);
+  });
+
   it('does not hide an unrelated persistence failure', async () => {
     const failure = new Error('database offline');
     const store = makeStore({ saveAll: vi.fn().mockRejectedValue(failure) });

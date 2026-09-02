@@ -16,7 +16,7 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
     const body = req.body as BatchMutationsRequest;
     const accepted: AcceptedMutation[] = [];
     const rejected: RejectedMutation[] = [];
-    const toSave = [];
+    const toSave: SavedMutation['mutation'][] = [];
     const seenIds = new Set<string>();
 
     for (const mutation of body.mutations) {
@@ -45,25 +45,7 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
       toSave.push(mutation);
     }
 
-    if (toSave.length > 0) {
-      try {
-        acceptSaved(await store.saveAll(toSave), accepted);
-      } catch (error) {
-        if (!(error instanceof DuplicateMutationError)) throw error;
-        const remaining = [];
-        for (const mutation of toSave) {
-          if (await store.existsById(mutation.id)) {
-            accepted.push({ id: mutation.id, receivedAt: new Date().toISOString() });
-          } else {
-            remaining.push(mutation);
-          }
-        }
-        if (remaining.length === toSave.length) throw error;
-        if (remaining.length > 0) {
-          acceptSaved(await store.saveAll(remaining), accepted);
-        }
-      }
-    }
+    await persistWithDuplicateRecovery(store, toSave, accepted);
 
     res.json({ accepted, rejected });
   });
@@ -115,6 +97,32 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
   });
 
   return router;
+}
+
+async function persistWithDuplicateRecovery(
+  store: MaayoRouterOptions['store'],
+  mutations: SavedMutation['mutation'][],
+  accepted: AcceptedMutation[],
+): Promise<void> {
+  let remaining = mutations;
+  while (remaining.length > 0) {
+    try {
+      acceptSaved(await store.saveAll(remaining), accepted);
+      return;
+    } catch (error) {
+      if (!(error instanceof DuplicateMutationError)) throw error;
+      const unresolved: SavedMutation['mutation'][] = [];
+      for (const mutation of remaining) {
+        if (await store.existsById(mutation.id)) {
+          accepted.push({ id: mutation.id, receivedAt: new Date().toISOString() });
+        } else {
+          unresolved.push(mutation);
+        }
+      }
+      if (unresolved.length === remaining.length) throw error;
+      remaining = unresolved;
+    }
+  }
 }
 
 function acceptSaved(saved: SavedMutation[], accepted: AcceptedMutation[]): void {

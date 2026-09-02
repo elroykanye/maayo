@@ -23,6 +23,47 @@ class MutationControllerTest {
     }
 
     @Test
+    fun `repeated duplicate races still save unrelated rows`() {
+        val first = mutation("01HTEST0000000000000000031")
+        val second = mutation("01HTEST0000000000000000032")
+        val unrelated = mutation("01HTEST0000000000000000033")
+        val persisted = mutableSetOf<String>()
+        val saveBatches = mutableListOf<List<String>>()
+        val repository = object : MaayoRepository {
+            override fun existsById(id: String) = id in persisted
+            override fun saveAll(mutations: List<Mutation>): List<SavedMutation> {
+                saveBatches += mutations.map { it.id }
+                when (saveBatches.size) {
+                    1 -> {
+                        persisted += first.id
+                        throw DuplicateMutationException()
+                    }
+                    2 -> {
+                        persisted += second.id
+                        throw DuplicateMutationException()
+                    }
+                }
+                persisted += mutations.map { it.id }
+                return mutations.map { SavedMutation(it, Instant.parse("2026-09-02T00:00:00Z")) }
+            }
+            override fun findChanges(channel: String, since: Instant?, limit: Int) = emptyList<SavedMutation>()
+        }
+        val controller = MutationController(repository, PermitAllChannelAuthorizer())
+
+        val response = controller.push(BatchMutationsRequest(listOf(first, second, unrelated)), null)
+
+        assertEquals(
+            listOf(
+                listOf(first.id, second.id, unrelated.id),
+                listOf(second.id, unrelated.id),
+                listOf(unrelated.id),
+            ),
+            saveBatches,
+        )
+        assertEquals(setOf(first.id, second.id, unrelated.id), response.accepted.map { it.id }.toSet())
+    }
+
+    @Test
     fun `unrelated persistence failure remains visible`() {
         val failure = IllegalStateException("database offline")
         val repository = object : MaayoRepository {

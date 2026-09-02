@@ -22,7 +22,7 @@ export class MutationsController {
     const { store, authorizer } = this.options;
     const accepted: AcceptedMutation[] = [];
     const rejected: RejectedMutation[] = [];
-    const toSave = [];
+    const toSave: SavedMutation['mutation'][] = [];
     const seenIds = new Set<string>();
 
     for (const mutation of body.mutations) {
@@ -55,25 +55,7 @@ export class MutationsController {
       toSave.push(mutation);
     }
 
-    if (toSave.length > 0) {
-      try {
-        this.acceptSaved(await store.saveAll(toSave), accepted);
-      } catch (error) {
-        if (!(error instanceof DuplicateMutationError)) throw error;
-        const remaining = [];
-        for (const mutation of toSave) {
-          if (await store.existsById(mutation.id)) {
-            accepted.push({ id: mutation.id, receivedAt: new Date().toISOString() });
-          } else {
-            remaining.push(mutation);
-          }
-        }
-        if (remaining.length === toSave.length) throw error;
-        if (remaining.length > 0) {
-          this.acceptSaved(await store.saveAll(remaining), accepted);
-        }
-      }
-    }
+    await this.persistWithDuplicateRecovery(store, toSave, accepted);
 
     return { accepted, rejected };
   }
@@ -81,6 +63,32 @@ export class MutationsController {
   private acceptSaved(saved: SavedMutation[], accepted: AcceptedMutation[]): void {
     for (const row of saved) {
       accepted.push({ id: row.mutation.id, receivedAt: row.receivedAt.toISOString() });
+    }
+  }
+
+  private async persistWithDuplicateRecovery(
+    store: MaayoModuleOptions['store'],
+    mutations: SavedMutation['mutation'][],
+    accepted: AcceptedMutation[],
+  ): Promise<void> {
+    let remaining = mutations;
+    while (remaining.length > 0) {
+      try {
+        this.acceptSaved(await store.saveAll(remaining), accepted);
+        return;
+      } catch (error) {
+        if (!(error instanceof DuplicateMutationError)) throw error;
+        const unresolved: SavedMutation['mutation'][] = [];
+        for (const mutation of remaining) {
+          if (await store.existsById(mutation.id)) {
+            accepted.push({ id: mutation.id, receivedAt: new Date().toISOString() });
+          } else {
+            unresolved.push(mutation);
+          }
+        }
+        if (unresolved.length === remaining.length) throw error;
+        remaining = unresolved;
+      }
     }
   }
 }

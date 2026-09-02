@@ -131,6 +131,36 @@ describe('MutationsController', () => {
     expect(result.accepted).toHaveLength(2);
   });
 
+  it('recovers repeated duplicate races and still saves unrelated rows', async () => {
+    const first = mutation('01ABCDEFGHJKMNPQRSTVWXYZ21');
+    const second = mutation('01ABCDEFGHJKMNPQRSTVWXYZ22');
+    const unrelated = mutation('01ABCDEFGHJKMNPQRSTVWXYZ23');
+    const persisted = new Set<string>();
+    const saveAll = vi.fn(async (mutations: Mutation[]) => {
+      if (saveAll.mock.calls.length === 1) {
+        persisted.add(first.id);
+        throw new DuplicateMutationError();
+      }
+      if (saveAll.mock.calls.length === 2) {
+        persisted.add(second.id);
+        throw new DuplicateMutationError();
+      }
+      mutations.forEach((item) => persisted.add(item.id));
+      return mutations.map(saved);
+    });
+    const store = makeStore({
+      existsById: vi.fn(async (id: string) => persisted.has(id)),
+      saveAll,
+    });
+    const ctrl = new MutationsController(makeOptions(store));
+
+    const result = await ctrl.push({ mutations: [first, second, unrelated] }, null);
+
+    expect(saveAll).toHaveBeenNthCalledWith(2, [second, unrelated]);
+    expect(saveAll).toHaveBeenNthCalledWith(3, [unrelated]);
+    expect(result.accepted).toHaveLength(3);
+  });
+
   it('does not hide an unrelated persistence failure', async () => {
     const failure = new Error('database offline');
     const store = makeStore({ saveAll: vi.fn().mockRejectedValue(failure) });

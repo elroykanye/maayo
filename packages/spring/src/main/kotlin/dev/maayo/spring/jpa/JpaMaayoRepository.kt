@@ -73,11 +73,14 @@ class JpaMaayoRepository(
     private fun Throwable.hasDuplicateSqlState(): Boolean {
         var current: Throwable? = this
         while (current != null) {
-            if (current is SQLException && current.sqlState == "23505") return true
+            if (current is SQLException && current.isDuplicateKey()) return true
             current = current.cause
         }
         return false
     }
+
+    private fun SQLException.isDuplicateKey(): Boolean =
+        sqlState == "23505" || (sqlState == "23000" && errorCode == 1062)
 
     private val listType = object : TypeReference<List<String>>() {}
 

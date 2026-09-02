@@ -55,26 +55,33 @@ class MutationController(
             }
         }
 
-        if (toSave.isNotEmpty()) {
+        persistWithDuplicateRecovery(toSave, accepted)
+
+        return BatchMutationsResponse(accepted = accepted, rejected = rejected)
+    }
+
+    private fun persistWithDuplicateRecovery(
+        mutations: List<Mutation>,
+        accepted: MutableList<AcceptedMutation>,
+    ) {
+        var remaining = mutations
+        while (remaining.isNotEmpty()) {
             try {
-                acceptSaved(repository.saveAll(toSave), accepted)
+                acceptSaved(repository.saveAll(remaining), accepted)
+                return
             } catch (error: DuplicateMutationException) {
-                val remaining = mutableListOf<Mutation>()
-                toSave.forEach { mutation ->
+                val unresolved = mutableListOf<Mutation>()
+                remaining.forEach { mutation ->
                     if (repository.existsById(mutation.id)) {
                         accepted += AcceptedMutation(mutation.id, Instant.now().toString())
                     } else {
-                        remaining += mutation
+                        unresolved += mutation
                     }
                 }
-                if (remaining.size == toSave.size) throw error
-                if (remaining.isNotEmpty()) {
-                    acceptSaved(repository.saveAll(remaining), accepted)
-                }
+                if (unresolved.size == remaining.size) throw error
+                remaining = unresolved
             }
         }
-
-        return BatchMutationsResponse(accepted = accepted, rejected = rejected)
     }
 
     private fun acceptSaved(saved: List<SavedMutation>, accepted: MutableList<AcceptedMutation>) {
