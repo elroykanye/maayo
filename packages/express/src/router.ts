@@ -5,7 +5,7 @@ import type {
   RejectedMutation,
   Cursor,
 } from '@maayo/protocol';
-import { DuplicateMutationError, SYSTEM_AUTHOR } from '@maayo/protocol';
+import { isDuplicateMutationError, SYSTEM_AUTHOR } from '@maayo/protocol';
 import type { MaayoRouterOptions, SavedMutation } from './interfaces';
 
 export function maayoRouter(options: MaayoRouterOptions): Router {
@@ -110,7 +110,7 @@ async function persistWithDuplicateRecovery(
       acceptSaved(await store.saveAll(remaining), accepted);
       return;
     } catch (error) {
-      if (!(error instanceof DuplicateMutationError)) throw error;
+      if (!isDuplicateMutationError(error)) throw error;
       const unresolved: SavedMutation['mutation'][] = [];
       for (const mutation of remaining) {
         if (await store.existsById(mutation.id)) {

@@ -163,6 +163,29 @@ describe('maayoRouter — POST /mutations', () => {
     expect((res._data.body as Record<string, unknown[]>).accepted).toHaveLength(3);
   });
 
+  it('recognizes a duplicate conflict created by another module format', async () => {
+    const raced = mutation('01ULID0000000000000000024');
+    let persisted = false;
+    const crossFormatConflict = Object.assign(new Error('Mutation id already exists'), {
+      name: 'DuplicateMutationError',
+      code: 'MAAYO_DUPLICATE_MUTATION',
+    });
+    const store = makeStore({
+      existsById: vi.fn(async () => persisted),
+      saveAll: vi.fn(async () => {
+        persisted = true;
+        throw crossFormatConflict;
+      }),
+    });
+    const router = maayoRouter({ store });
+    const handler = (router.stack[0] as unknown as RouteLayer).route.stack[0].handle;
+    const res = mockRes();
+
+    await handler(mockReq({ mutations: [raced] }), res);
+
+    expect((res._data.body as Record<string, unknown[]>).accepted).toHaveLength(1);
+  });
+
   it('does not hide an unrelated persistence failure', async () => {
     const failure = new Error('database offline');
     const store = makeStore({ saveAll: vi.fn().mockRejectedValue(failure) });

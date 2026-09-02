@@ -161,6 +161,27 @@ describe('MutationsController', () => {
     expect(result.accepted).toHaveLength(3);
   });
 
+  it('recognizes a duplicate conflict created by another module format', async () => {
+    const raced = mutation('01ABCDEFGHJKMNPQRSTVWXYZ24');
+    let persisted = false;
+    const crossFormatConflict = Object.assign(new Error('Mutation id already exists'), {
+      name: 'DuplicateMutationError',
+      code: 'MAAYO_DUPLICATE_MUTATION',
+    });
+    const store = makeStore({
+      existsById: vi.fn(async () => persisted),
+      saveAll: vi.fn(async () => {
+        persisted = true;
+        throw crossFormatConflict;
+      }),
+    });
+    const ctrl = new MutationsController(makeOptions(store));
+
+    const result = await ctrl.push({ mutations: [raced] }, null);
+
+    expect(result.accepted).toHaveLength(1);
+  });
+
   it('does not hide an unrelated persistence failure', async () => {
     const failure = new Error('database offline');
     const store = makeStore({ saveAll: vi.fn().mockRejectedValue(failure) });

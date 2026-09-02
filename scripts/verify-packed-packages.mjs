@@ -75,9 +75,30 @@ try {
 
   const esmCheck = join(consumerDir, 'esm-consumer.mjs');
   writeFileSync(esmCheck, [
+    "import { createRequire } from 'node:module';",
     ...packageNames.map((name, index) => `import * as package${index} from ${JSON.stringify(name)};`),
     ...packageNames.map((name, index) =>
       `if (Object.keys(package${index}).length === 0) throw new Error(${JSON.stringify(`${name} exposed no ESM exports`)});`),
+    "const require = createRequire(import.meta.url);",
+    "const cjsProtocol = require('@maayo/protocol');",
+    "const cjsError = new cjsProtocol.DuplicateMutationError();",
+    "const esmError = new package0.DuplicateMutationError();",
+    "if (!package0.isDuplicateMutationError(cjsError)) throw new Error('ESM protocol did not recognize the CommonJS duplicate error');",
+    "if (!cjsProtocol.isDuplicateMutationError(esmError)) throw new Error('CommonJS protocol did not recognize the ESM duplicate error');",
+    "async function probeExpress(makeRouter, Conflict) {",
+    "  let persisted = false;",
+    "  const mutation = { id: '01PACKED00000000000000001', channel: 'org:packed', entityType: 'Student', entityId: 'student-1', op: 'CREATE', payload: '{}', authorIdentityId: 'user-1', deviceId: 'device-1', clientTs: '2026-09-02T00:00:00Z', parentIds: [] };",
+    "  const store = { existsById: async () => persisted, saveAll: async () => { persisted = true; throw new Conflict(); }, findChanges: async () => [] };",
+    "  const router = makeRouter({ store });",
+    "  const handler = router.stack[0].route.stack[0].handle;",
+    "  let body;",
+    "  const response = { json: (value) => { body = value; }, status: () => response };",
+    "  await handler({ body: { mutations: [mutation] }, query: {} }, response);",
+    "  if (body?.accepted?.[0]?.id !== mutation.id) throw new Error('Express adapter did not recover a cross-format duplicate conflict');",
+    "}",
+    "const cjsExpress = require('@maayo/express');",
+    "await probeExpress(package5.maayoRouter, cjsProtocol.DuplicateMutationError);",
+    "await probeExpress(cjsExpress.maayoRouter, package0.DuplicateMutationError);",
   ].join('\n'));
   execFileSync(process.execPath, [esmCheck], {
     cwd: consumerDir,

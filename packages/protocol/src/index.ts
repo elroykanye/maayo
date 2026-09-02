@@ -15,4 +15,8 @@ export type {
 
 export type { SyncPolicy, EntitySchema, SchemaResponse } from './schema';
 export { SYSTEM_AUTHOR } from './schema';
-export { DuplicateMutationError } from './errors';
+export {
+  DUPLICATE_MUTATION_ERROR_CODE,
+  DuplicateMutationError,
+  isDuplicateMutationError,
+} from './errors';
