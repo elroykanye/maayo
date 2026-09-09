@@ -25,3 +25,14 @@ test('runs a native package-manager executable directly', () => {
     args: ['pack'],
   });
 });
+
+test('falls back to pnpm on PATH when launched outside a pnpm script', () => {
+  assert.deepEqual(resolvePnpmInvocation(undefined, ['pack'], 'linux'), {
+    command: 'pnpm',
+    args: ['pack'],
+  });
+  assert.deepEqual(resolvePnpmInvocation(undefined, ['pack'], 'win32'), {
+    command: 'pnpm.cmd',
+    args: ['pack'],
+  });
+});
