@@ -70,6 +70,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: pnpm install
       - run: pnpm build
+      - run: pnpm test:pack
       - if: needs.detect-changes.outputs.protocol == 'true'
         run: pnpm --filter @maayo/protocol publish --access public --no-git-checks
       - if: needs.detect-changes.outputs.client == 'true'

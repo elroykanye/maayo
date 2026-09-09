@@ -59,11 +59,16 @@ interface CursorRow {
 }
 ```
 
-The `lastReceivedAt` timestamp is sent as `?since=` on each pull request. The server returns only mutations received after that point. First-time pulls (no cursor) do a full catch-up.
+Both values form one cursor. Continuations send `lastReceivedAt` as `since` together with
+`lastMutationId`, and the server returns rows strictly after that `(timestamp, id)` pair. This
+prevents a page boundary from dropping rows that share a timestamp. First-time pulls omit both
+values and do a full catch-up; sending only one cursor field is invalid.
 
 ## Pagination (`hasMore`)
 
-The server fetches `limit + 1` rows. If `rows.size > limit`, it sets `hasMore: true` and drops the extra row. The client re-pulls immediately while `hasMore` is true, walking pages in a tight loop within a single sync cycle.
+The server fetches `limit + 1` rows ordered by `(receivedAt, id)`. If `rows.size > limit`, it sets
+`hasMore: true` and drops the extra row. The client re-pulls immediately while `hasMore` is true,
+walking pages in a tight loop within a single sync cycle.
 
 ## ULID
 

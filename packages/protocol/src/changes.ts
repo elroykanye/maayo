@@ -18,8 +18,10 @@ export interface ChangesResponse {
 /** Query params for GET /sync/changes */
 export interface ChangesQuery {
   channel: string;
-  /** ISO-8601 — pull only mutations received after this timestamp */
+  /** ISO-8601 — primary component of the last-seen compound cursor. */
   since?: string;
+  /** Mutation id paired with `since` to continue after timestamp ties. */
+  lastMutationId?: string;
   /** Max mutations per response, default 500 */
   limit?: number;
 }

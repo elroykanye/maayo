@@ -1,6 +1,7 @@
 # @maayo/protocol
 
-TypeScript types for the Maayo sync protocol. Zero runtime dependencies — types only.
+TypeScript contracts for the Maayo sync protocol. The package has zero dependencies and also
+exports the runtime `DuplicateMutationError` used by Node persistence adapters.
 
 ## Install
 
@@ -69,10 +70,21 @@ interface Cursor {
 
 interface ChangesQuery {
   channel: string;
-  since?: string;    // ISO-8601
+  since?: string;            // ISO-8601; paired with lastMutationId
+  lastMutationId?: string;   // paired with since
   limit?: number;
 }
 ```
+
+`since` and `lastMutationId` are optional only for the first page. A continuation supplies both.
+
+### `DuplicateMutationError`
+
+Express and Nest stores throw this error only when an atomic persistence operation loses a
+mutation-ID uniqueness race. The adapters may then re-check IDs safely; unrelated database errors
+must not be wrapped as duplicates. The class carries `code: "MAAYO_DUPLICATE_MUTATION"`, and
+`isDuplicateMutationError(error)` checks that stable discriminator so ESM, CommonJS, and duplicated
+package instances interoperate without relying on constructor identity.
 
 ## Usage
 

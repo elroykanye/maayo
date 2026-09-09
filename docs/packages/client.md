@@ -27,7 +27,8 @@ const engine = new SyncEngine({
 });
 
 engine.start();   // begins push–pull loop
-engine.stop();    // clears the interval
+engine.stop();    // clears the interval and aborts the active cycle
+await engine.waitForIdle(); // wait until active cleanup has settled
 await engine.sync();   // run one cycle immediately
 await engine.resetCursors();          // full re-pull of every channel ("re-clone")
 await engine.resetCursors(['org:1']); // ...or just some channels
@@ -43,6 +44,8 @@ await engine.resetCursors(['org:1']); // ...or just some channels
 | `tables` | `UserTableSchema` | `{}` | Extra Dexie table schemas for user data |
 | `authHeaders` | `() => Record<string,string> \| Promise<...>` | none | Called before each request |
 | `intervalMs` | `number` | `10_000` | Push+pull interval in milliseconds |
+| `requestTimeoutMs` | `number` | `30_000` | Deadline for headers and response-body parsing; timeout preserves queued work for retry |
+| `pushBatchSize` | `number` | `100` | Maximum ordered outbox rows per push request; backlogs drain in successive batches |
 | `onReject` | `(rejection, mutation, quarantined) => void` | none | Fires per server-rejected mutation (207 `rejected`) |
 | `maxRejectAttempts` | `number` | `5` | Rejections before a mutation is quarantined out of the push loop |
 | `permanentRejectCodes` | `readonly string[]` | `[]` | Rejection `code`s that quarantine immediately |
@@ -162,7 +165,10 @@ const db = openDatabase('myapp', {
 });
 ```
 
-`openDatabase` returns (and caches) a `MaayoDatabase` keyed by name. Calling it twice with the same name returns the same instance.
+`openDatabase` returns (and caches) a `MaayoDatabase` keyed by name. Calling it twice with the same
+name returns the same live instance. After that handle is closed, the next call creates an
+operational replacement. Reopening a live name with incompatible table or migration configuration
+throws instead of silently reusing the wrong schema.
 
 ### Built-in tables
 

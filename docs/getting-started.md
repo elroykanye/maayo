@@ -88,7 +88,7 @@ The server just needs to implement `MaayoRepository` (Kotlin/Spring) or the two 
 If Spring Data JPA is already on your classpath, add the dependency and you're done:
 
 ```kotlin
-implementation("dev.maayo:maayo-spring:0.1.0")
+implementation("dev.maayo:maayo-spring:0.3.1")
 ```
 
 The JPA adapter auto-configures a `maayo_mutation` table. No YAML needed.
@@ -96,7 +96,7 @@ The JPA adapter auto-configures a `maayo_mutation` table. No YAML needed.
 ### Spring Boot — bring your own store (MongoDB, DynamoDB, JDBC, …)
 
 ```kotlin
-implementation("dev.maayo:maayo-spring:0.1.0")
+implementation("dev.maayo:maayo-spring:0.3.1")
 ```
 
 Implement `MaayoRepository` for your store and register it as a bean:
@@ -120,13 +120,33 @@ class MongoMaayoRepository(private val mongo: MongoTemplate) : MaayoRepository {
     override fun findChanges(channel: String, since: Instant?, limit: Int): List<SavedMutation> {
         val criteria = Criteria.where("channel").regex("^${Regex.escape(channel)}(/.*)?$")
         since?.let { criteria.and("receivedAt").gt(it) }
-        val query = Query(criteria).with(Sort.by("receivedAt")).limit(limit)
+        val query = Query(criteria).with(Sort.by("receivedAt", "maayoId")).limit(limit)
+        return mongo.find(query, MaayoDocument::class.java).map { it.toSaved() }
+    }
+
+    override fun findChanges(
+        channel: String,
+        since: Instant?,
+        lastMutationId: String?,
+        limit: Int,
+    ): List<SavedMutation> {
+        if (since == null || lastMutationId == null) return findChanges(channel, since, limit)
+        val channelCriteria = Criteria.where("channel").regex("^${Regex.escape(channel)}(/.*)?$")
+        val cursorCriteria = Criteria().orOperator(
+            Criteria.where("receivedAt").gt(since),
+            Criteria().andOperator(
+                Criteria.where("receivedAt").`is`(since),
+                Criteria.where("maayoId").gt(lastMutationId),
+            ),
+        )
+        val criteria = Criteria().andOperator(channelCriteria, cursorCriteria)
+        val query = Query(criteria).with(Sort.by("receivedAt", "maayoId")).limit(limit)
         return mongo.find(query, MaayoDocument::class.java).map { it.toSaved() }
     }
 }
 ```
 
-The two controllers (`POST /sync/mutations`, `GET /sync/changes`) register automatically once a `MaayoRepository` bean is present.
+The two controllers (`POST /sync/mutations`, `GET /sync/changes`) register automatically once a `MaayoRepository` bean is present. The compound overload is required for continuation pages; its default fails explicitly so a timestamp-only fallback cannot drop tied rows.
 
 ### Any other backend
 

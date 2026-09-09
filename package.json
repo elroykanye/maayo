@@ -9,6 +9,7 @@
     "lint": "nx run-many -t lint",
     "build:protocol": "nx build @maayo/protocol",
     "build:client": "nx build @maayo/client",
+    "test:pack": "node scripts/verify-packed-packages.mjs",
     "typecheck": "nx run-many -t typecheck"
   },
   "devDependencies": {
@@ -21,6 +22,7 @@
     "prettier": "^3.5.3",
     "rxjs": "~7.8.2",
     "tslib": "^2.8.1",
+    "tsup": "^8.5.0",
     "typescript": "~5.8.3",
     "vitest": "^4.0.9"
   }

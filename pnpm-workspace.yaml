@@ -3,8 +3,10 @@ packages:
   - 'apps/*'
 
 onlyBuiltDependencies:
+  - esbuild
   - nx
 
 allowBuilds:
   nx: true
   "@nestjs/core": true
+  esbuild: true

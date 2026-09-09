@@ -10,7 +10,7 @@
       "executor": "nx:run-commands",
       "dependsOn": ["^build"],
       "options": {
-        "command": "tsc -p tsconfig.build.json",
+        "command": "pnpm run build",
         "cwd": "packages/client"
       },
       "outputs": ["{projectRoot}/dist"]

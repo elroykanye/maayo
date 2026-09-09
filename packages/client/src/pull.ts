@@ -1,5 +1,6 @@
 import type { ChangesResponse, Mutation } from '@maayo/protocol';
 import type { MaayoDatabase } from './database';
+import { fetchWithTimeout } from './transport';
 
 /**
  * HTTP failure from a push or pull — carries the phase and status so consumers
@@ -40,6 +41,10 @@ export interface PullOptions {
   channel: string;
   headers?: Record<string, string>;
   limit?: number;
+  /** Abort the pull after this many milliseconds. Default 30_000. */
+  requestTimeoutMs?: number;
+  /** Internal lifecycle cancellation signal for the owning sync cycle. */
+  signal?: AbortSignal;
   /** Apply DELETEs as gated soft tombstones — see SyncConfig.softDelete. */
   softDelete?: boolean;
   /** Consumer-owned merge — see {@link ApplyMutationHook}. */
@@ -64,15 +69,16 @@ export async function pull(
   const cursor = await db._cursors.get(opts.channel);
   const params = new URLSearchParams({ channel: opts.channel });
   if (cursor?.lastReceivedAt) params.set('since', cursor.lastReceivedAt);
+  if (cursor?.lastMutationId) params.set('lastMutationId', cursor.lastMutationId);
   if (opts.limit) params.set('limit', String(opts.limit));
 
-  const resp = await fetch(`${opts.baseUrl}/sync/changes?${params}`, {
+  const data = await fetchWithTimeout(`${opts.baseUrl}/sync/changes?${params}`, {
     headers: { 'Content-Type': 'application/json', ...opts.headers },
-  });
-
-  if (!resp.ok) throw new SyncHttpError('pull', resp.status, resp.statusText);
-
-  const data: ChangesResponse = await resp.json();
+    signal: opts.signal,
+  }, async (resp) => {
+    if (!resp.ok) throw new SyncHttpError('pull', resp.status, resp.statusText);
+    return resp.json() as Promise<ChangesResponse>;
+  }, opts.requestTimeoutMs);
   const result = await applyMutations(db, data.mutations, opts);
 
   if (data.cursor.lastReceivedAt) {

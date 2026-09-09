@@ -76,6 +76,10 @@ export function StudentList() {
 | `useSyncStatus()` | `'idle' \| 'syncing' \| 'error' \| 'offline'` |
 | `useSyncEngine()` | Raw `SyncEngine` instance for advanced use |
 
+`SyncProvider` treats a new `config` object as a replacement request. It stops and fully drains the
+old engine before exposing or starting the new one, so no two configurations own timers, locks, or
+requests at once. Memoize the object when its values are unchanged.
+
 ## Next.js notes
 
 All hooks use browser APIs (IndexedDB, `navigator.onLine`). In the App Router, add `'use client'` to every component that calls a Maayo hook, including the layout that renders `<SyncProvider>`.

@@ -81,4 +81,30 @@ describe('applyMutations via pull()', () => {
     expect(result.skipped).toBe(1);
     expect(result.applied).toBe(0);
   });
+
+  it('continues a tied-timestamp page with the last mutation id', async () => {
+    const lastReceivedAt = '2026-08-30T12:00:00.000Z';
+    await db._cursors.put({
+      channel: 'org:1',
+      lastMutationId: 'mut-0001',
+      lastReceivedAt,
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        channel: 'org:1',
+        mutations: [],
+        hasMore: false,
+        cursor: { lastMutationId: 'mut-0001', lastReceivedAt },
+      }),
+    } as Response);
+    (globalThis as Record<string, unknown>).fetch = fetchMock;
+    const { pull } = await import('../pull');
+
+    await pull(db, { baseUrl: 'http://test', channel: 'org:1' });
+
+    const requestUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(requestUrl.searchParams.get('since')).toBe(lastReceivedAt);
+    expect(requestUrl.searchParams.get('lastMutationId')).toBe('mut-0001');
+  });
 });

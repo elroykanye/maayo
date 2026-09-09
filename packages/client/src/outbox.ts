@@ -34,11 +34,12 @@ export async function enqueue(db: MaayoDatabase, opts: EnqueueOptions): Promise<
  * rows (server-rejected past their retry budget — see {@link rejected}) and
  * rows still inside their rejection backoff window.
  */
-export async function pending(db: MaayoDatabase): Promise<OutboxRow[]> {
+export async function pending(db: MaayoDatabase, limit?: number): Promise<OutboxRow[]> {
   const now = new Date().toISOString();
-  return db._outbox
+  const rows = db._outbox
+    .orderBy('clientTs')
     .filter((row) => !row.syncedAt && !row.rejectedAt && (!row.nextAttemptAt || row.nextAttemptAt <= now))
-    .sortBy('clientTs');
+  return limit === undefined ? rows.toArray() : rows.limit(limit).toArray();
 }
 
 export async function markSynced(db: MaayoDatabase, ids: string[], receivedAt: string): Promise<void> {

@@ -11,11 +11,11 @@ Maayo is for applications that need to work without a network connection. Local 
 
 | Package | Version | Downloads | Description |
 |---------|---------|-----------|-------------|
-| [`@maayo/protocol`](https://www.npmjs.com/package/@maayo/protocol) | [![npm](https://img.shields.io/npm/v/@maayo/protocol?style=flat-square)](https://www.npmjs.com/package/@maayo/protocol) | [![downloads](https://img.shields.io/npm/dm/@maayo/protocol?style=flat-square)](https://www.npmjs.com/package/@maayo/protocol) | TypeScript types — zero runtime deps |
+| [`@maayo/protocol`](https://www.npmjs.com/package/@maayo/protocol) | [![npm](https://img.shields.io/npm/v/@maayo/protocol?style=flat-square)](https://www.npmjs.com/package/@maayo/protocol) | [![downloads](https://img.shields.io/npm/dm/@maayo/protocol?style=flat-square)](https://www.npmjs.com/package/@maayo/protocol) | Shared protocol contracts — zero runtime deps |
 | [`@maayo/client`](https://www.npmjs.com/package/@maayo/client) | [![npm](https://img.shields.io/npm/v/@maayo/client?style=flat-square)](https://www.npmjs.com/package/@maayo/client) | [![downloads](https://img.shields.io/npm/dm/@maayo/client?style=flat-square)](https://www.npmjs.com/package/@maayo/client) | Core engine: outbox, push/pull, LWW |
 | [`@maayo/react`](https://www.npmjs.com/package/@maayo/react) | [![npm](https://img.shields.io/npm/v/@maayo/react?style=flat-square)](https://www.npmjs.com/package/@maayo/react) | [![downloads](https://img.shields.io/npm/dm/@maayo/react?style=flat-square)](https://www.npmjs.com/package/@maayo/react) | React / Next.js hooks |
 | [`@maayo/angular`](https://www.npmjs.com/package/@maayo/angular) | [![npm](https://img.shields.io/npm/v/@maayo/angular?style=flat-square)](https://www.npmjs.com/package/@maayo/angular) | [![downloads](https://img.shields.io/npm/dm/@maayo/angular?style=flat-square)](https://www.npmjs.com/package/@maayo/angular) | Angular signals + DI |
-| `@maayo/spring` | [![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-0.1.1-blue?style=flat-square)](https://github.com/elroykanye/maayo/packages) | — | Spring Boot autoconfiguration |
+| `@maayo/spring` | [![GitHub Packages](https://img.shields.io/badge/GitHub%20Packages-0.3.1-blue?style=flat-square)](https://github.com/elroykanye/maayo/packages) | — | Spring Boot autoconfiguration |
 
 ## How it works
 
@@ -86,7 +86,7 @@ repositories {
     maven { url = uri("https://maven.pkg.github.com/elroykanye/maayo") }
 }
 dependencies {
-    implementation("dev.maayo:maayo-spring:0.1.1")
+    implementation("dev.maayo:maayo-spring:0.3.1")
 }
 ```
 

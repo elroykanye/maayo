@@ -1,5 +1,6 @@
 import {
   type EnvironmentProviders,
+  DestroyRef,
   Injector,
   APP_INITIALIZER,
   makeEnvironmentProviders,
@@ -26,14 +27,16 @@ export function provideSync(config: SyncProviderConfig): EnvironmentProviders {
   return makeEnvironmentProviders([
     {
       provide: SYNC_ENGINE,
-      useFactory: (injector: Injector) => {
+      useFactory: (injector: Injector, destroyRef: DestroyRef) => {
         const channels =
           typeof config.channels === 'function'
             ? config.channels(injector)
             : config.channels;
-        return new SyncEngine({ ...config, channels });
+        const engine = new SyncEngine({ ...config, channels });
+        destroyRef.onDestroy(() => engine.stop());
+        return engine;
       },
-      deps: [Injector],
+      deps: [Injector, DestroyRef],
     },
     {
       provide: APP_INITIALIZER,

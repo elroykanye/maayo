@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { Mutation } from '@maayo/protocol';
+import { DuplicateMutationError, type Mutation } from '@maayo/protocol';
 import { MutationsController } from './mutations.controller';
 import { ChangesController } from './changes.controller';
 import type { MaayoStore, SavedMutation } from './interfaces';
@@ -56,6 +56,20 @@ describe('MutationsController', () => {
     expect(result.accepted).toHaveLength(0);
   });
 
+  it('rejects the reserved system author before persistence', async () => {
+    const store = makeStore();
+    const ctrl = new MutationsController(makeOptions(store));
+    const m = { ...mutation('01ABCDEFGHJKMNPQRSTVWXYZ02'), authorIdentityId: 'system' };
+
+    const result = await ctrl.push({ mutations: [m] }, null);
+
+    expect(result.accepted).toHaveLength(0);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({ id: m.id, code: 'reserved_author' }),
+    ]);
+    expect(store.saveAll).not.toHaveBeenCalled();
+  });
+
   it('acks an already-known mutation without saving again', async () => {
     const store = makeStore({ existsById: vi.fn().mockResolvedValue(true) });
     const ctrl = new MutationsController(makeOptions(store));
@@ -81,6 +95,126 @@ describe('MutationsController', () => {
     expect(result.rejected[0].reason).toContain('unauthorized');
     expect(store.saveAll).not.toHaveBeenCalled();
   });
+
+  it('saves a duplicate id only once within one request', async () => {
+    const store = makeStore();
+    const ctrl = new MutationsController(makeOptions(store));
+    const m = mutation('01ABCDEFGHJKMNPQRSTVWXYZ10');
+
+    const result = await ctrl.push({ mutations: [m, m] }, null);
+
+    expect(store.saveAll).toHaveBeenCalledWith([m]);
+    expect(result.accepted).toHaveLength(1);
+  });
+
+  it('recovers a concurrent duplicate and still saves unrelated rows', async () => {
+    const raced = mutation('01ABCDEFGHJKMNPQRSTVWXYZ11');
+    const unrelated = mutation('01ABCDEFGHJKMNPQRSTVWXYZ12');
+    const persisted = new Set<string>();
+    const store = makeStore({
+      existsById: vi.fn(async (id: string) => persisted.has(id)),
+      saveAll: vi.fn()
+        .mockImplementationOnce(async () => {
+          persisted.add(raced.id);
+          throw new DuplicateMutationError();
+        })
+        .mockImplementation(async (ms: Mutation[]) => {
+          ms.forEach((m) => persisted.add(m.id));
+          return ms.map(saved);
+        }),
+    });
+    const ctrl = new MutationsController(makeOptions(store));
+
+    const result = await ctrl.push({ mutations: [raced, unrelated] }, null);
+
+    expect(store.saveAll).toHaveBeenNthCalledWith(2, [unrelated]);
+    expect(result.accepted).toHaveLength(2);
+  });
+
+  it('recovers repeated duplicate races and still saves unrelated rows', async () => {
+    const first = mutation('01ABCDEFGHJKMNPQRSTVWXYZ21');
+    const second = mutation('01ABCDEFGHJKMNPQRSTVWXYZ22');
+    const unrelated = mutation('01ABCDEFGHJKMNPQRSTVWXYZ23');
+    const persisted = new Set<string>();
+    const saveAll = vi.fn(async (mutations: Mutation[]) => {
+      if (saveAll.mock.calls.length === 1) {
+        persisted.add(first.id);
+        throw new DuplicateMutationError();
+      }
+      if (saveAll.mock.calls.length === 2) {
+        persisted.add(second.id);
+        throw new DuplicateMutationError();
+      }
+      mutations.forEach((item) => persisted.add(item.id));
+      return mutations.map(saved);
+    });
+    const store = makeStore({
+      existsById: vi.fn(async (id: string) => persisted.has(id)),
+      saveAll,
+    });
+    const ctrl = new MutationsController(makeOptions(store));
+
+    const result = await ctrl.push({ mutations: [first, second, unrelated] }, null);
+
+    expect(saveAll).toHaveBeenNthCalledWith(2, [second, unrelated]);
+    expect(saveAll).toHaveBeenNthCalledWith(3, [unrelated]);
+    expect(result.accepted).toHaveLength(3);
+  });
+
+  it('recognizes a duplicate conflict created by another module format', async () => {
+    const raced = mutation('01ABCDEFGHJKMNPQRSTVWXYZ24');
+    let persisted = false;
+    const crossFormatConflict = Object.assign(new Error('Mutation id already exists'), {
+      name: 'DuplicateMutationError',
+      code: 'MAAYO_DUPLICATE_MUTATION',
+    });
+    const store = makeStore({
+      existsById: vi.fn(async () => persisted),
+      saveAll: vi.fn(async () => {
+        persisted = true;
+        throw crossFormatConflict;
+      }),
+    });
+    const ctrl = new MutationsController(makeOptions(store));
+
+    const result = await ctrl.push({ mutations: [raced] }, null);
+
+    expect(result.accepted).toHaveLength(1);
+  });
+
+  it('does not hide an unrelated persistence failure', async () => {
+    const failure = new Error('database offline');
+    const store = makeStore({ saveAll: vi.fn().mockRejectedValue(failure) });
+    const ctrl = new MutationsController(makeOptions(store));
+
+    await expect(ctrl.push({
+      mutations: [mutation('01ABCDEFGHJKMNPQRSTVWXYZ13')],
+    }, null)).rejects.toBe(failure);
+  });
+
+  it('does not hide an unrelated failure when a coincidental id appears concurrently', async () => {
+    const raced = mutation('01ABCDEFGHJKMNPQRSTVWXYZ14');
+    const unrelated = mutation('01ABCDEFGHJKMNPQRSTVWXYZ15');
+    const failure = new Error('database offline');
+    const persisted = new Set<string>();
+    const saveAll = vi.fn(async (mutations: Mutation[]) => {
+      if (saveAll.mock.calls.length === 1) {
+        persisted.add(raced.id);
+        throw failure;
+      }
+      mutations.forEach((mutation) => persisted.add(mutation.id));
+      return mutations.map(saved);
+    });
+    const store = makeStore({
+      existsById: vi.fn(async (id: string) => persisted.has(id)),
+      saveAll,
+    });
+    const ctrl = new MutationsController(makeOptions(store));
+
+    await expect(ctrl.push({ mutations: [raced, unrelated] }, null)).rejects.toBe(failure);
+    expect(saveAll).toHaveBeenCalledTimes(1);
+    expect(persisted.has(unrelated.id)).toBe(false);
+  });
 });
 
 describe('ChangesController', () => {
@@ -101,12 +235,21 @@ describe('ChangesController', () => {
     expect(result.cursor).toEqual({ lastMutationId: null, lastReceivedAt: null });
   });
 
-  it('passes since and limit+1 to store for pagination probe', async () => {
-    await ctrl.pull('org:abc', '2026-01-01T00:00:00Z', '10');
+  it('passes the compound cursor and limit+1 to store for pagination probe', async () => {
+    const findChangesByCursor = vi.fn().mockResolvedValue([]);
+    store = makeStore({ findChangesByCursor });
+    ctrl = new ChangesController(makeOptions(store));
+    await ctrl.pull(
+      'org:abc',
+      '2026-01-01T00:00:00Z',
+      '01ABCDEFGHJKMNPQRSTVWXYZ99',
+      '10',
+    );
 
-    expect(store.findChanges).toHaveBeenCalledWith(
+    expect(findChangesByCursor).toHaveBeenCalledWith(
       'org:abc',
       new Date('2026-01-01T00:00:00Z'),
+      '01ABCDEFGHJKMNPQRSTVWXYZ99',
       11,
     );
   });
@@ -116,7 +259,7 @@ describe('ChangesController', () => {
     store = makeStore({ findChanges: vi.fn().mockResolvedValue(rows) });
     ctrl = new ChangesController(makeOptions(store, { defaultLimit: 5 }));
 
-    const result = await ctrl.pull('org:abc', undefined, '5');
+    const result = await ctrl.pull('org:abc', undefined, undefined, '5');
 
     expect(result.hasMore).toBe(true);
     expect(result.mutations).toHaveLength(5);

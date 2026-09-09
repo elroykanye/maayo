@@ -1,6 +1,7 @@
 {
   "name": "@maayo/angular",
-  "version": "0.3.0",
+  "version": "0.3.1",
+  "type": "module",
   "description": "Angular adapter for Maayo \u00e2\u20ac\u201d provideSync(), syncCollection() signal primitive",
   "keywords": [
     "offline-first",
@@ -23,7 +24,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsup --config ../../tsup.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -33,6 +34,7 @@
   },
   "peerDependencies": {
     "@angular/core": ">=17.0.0",
+    "dexie": ">=4.0.0",
     "rxjs": ">=7.0.0"
   },
   "devDependencies": {

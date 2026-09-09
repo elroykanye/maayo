@@ -7,7 +7,7 @@ import java.time.Instant
 @Table(
     name = "maayo_mutations",
     indexes = [
-        Index(name = "idx_maayo_channel_received", columnList = "channel, receivedAt"),
+        Index(name = "idx_maayo_channel_received", columnList = "channel, receivedAt, maayoId"),
         Index(name = "idx_maayo_maayo_id", columnList = "maayoId", unique = true),
     ],
 )
