@@ -26,3 +26,17 @@ test('publishes pnpm-packed tarballs through the npm trusted-publishing client',
     );
   }
 });
+
+test('every published package identifies the trusted GitHub repository', () => {
+  for (const packageName of packageNames) {
+    const manifest = JSON.parse(readFileSync(
+      new URL(`../packages/${packageName}/package.json`, import.meta.url),
+      'utf8',
+    ));
+    assert.deepEqual(manifest.repository, {
+      type: 'git',
+      url: 'git+https://github.com/elroykanye/maayo.git',
+      directory: `packages/${packageName}`,
+    });
+  }
+});

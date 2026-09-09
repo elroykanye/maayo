@@ -10,6 +10,11 @@
     "signals"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elroykanye/maayo.git",
+    "directory": "packages/angular"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
