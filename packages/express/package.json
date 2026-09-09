@@ -5,6 +5,11 @@
   "description": "Express adapter for Maayo offline-first sync — maayoRouter() middleware",
   "keywords": ["offline-first", "sync", "express", "maayo"],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elroykanye/maayo.git",
+    "directory": "packages/express"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
