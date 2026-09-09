@@ -9,7 +9,7 @@
     "lint": "nx run-many -t lint",
     "build:protocol": "nx build @maayo/protocol",
     "build:client": "nx build @maayo/client",
-    "test:pack": "node --test scripts/pnpm-cli.test.mjs && node scripts/verify-packed-packages.mjs",
+    "test:pack": "node --test scripts/pnpm-cli.test.mjs scripts/publish-npm-package.test.mjs scripts/publish-workflow.test.mjs && node scripts/verify-packed-packages.mjs",
     "typecheck": "nx run-many -t typecheck"
   },
   "devDependencies": {

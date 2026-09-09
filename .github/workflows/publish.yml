@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      force_npm:
+        description: Publish every npm package version that is not yet in the registry
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   detect-changes:
@@ -24,18 +31,28 @@ jobs:
       - name: Detect per-package changes since previous tag
         id: check
         run: |
-          PREV=$(git tag --sort=-version:refname | grep -E '^v[0-9]' | sed -n '2p')
-          changed() {
-            [ -z "$PREV" ] && echo true && return
-            [ -n "$(git diff --name-only "$PREV" HEAD -- "$1")" ] && echo true || echo false
-          }
-          PROTOCOL=$(changed packages/protocol)
-          CLIENT=$(changed packages/client)
-          ANGULAR=$(changed packages/angular)
-          REACT=$(changed packages/react)
-          NEST=$(changed packages/nest)
-          EXPRESS=$(changed packages/express)
-          SPRING=$(changed packages/spring)
+          if [ "${{ inputs.force_npm }}" = "true" ]; then
+            PROTOCOL=true
+            CLIENT=true
+            ANGULAR=true
+            REACT=true
+            NEST=true
+            EXPRESS=true
+            SPRING=false
+          else
+            PREV=$(git tag --sort=-version:refname | grep -E '^v[0-9]' | sed -n '2p')
+            changed() {
+              [ -z "$PREV" ] && echo true && return
+              [ -n "$(git diff --name-only "$PREV" HEAD -- "$1")" ] && echo true || echo false
+            }
+            PROTOCOL=$(changed packages/protocol)
+            CLIENT=$(changed packages/client)
+            ANGULAR=$(changed packages/angular)
+            REACT=$(changed packages/react)
+            NEST=$(changed packages/nest)
+            EXPRESS=$(changed packages/express)
+            SPRING=$(changed packages/spring)
+          fi
           if [ "$PROTOCOL" = true ] || [ "$CLIENT" = true ] || [ "$ANGULAR" = true ] || \
              [ "$REACT" = true ]    || [ "$NEST" = true ]   || [ "$EXPRESS" = true ]; then
             ANY_NPM=true
@@ -65,26 +82,24 @@ jobs:
           version: latest
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install
       - run: pnpm build
       - run: pnpm test:pack
       - if: needs.detect-changes.outputs.protocol == 'true'
-        run: pnpm --filter @maayo/protocol publish --access public --no-git-checks
+        run: node scripts/publish-npm-package.mjs packages/protocol
       - if: needs.detect-changes.outputs.client == 'true'
-        run: pnpm --filter @maayo/client publish --access public --no-git-checks
+        run: node scripts/publish-npm-package.mjs packages/client
       - if: needs.detect-changes.outputs.angular == 'true'
-        run: pnpm --filter @maayo/angular publish --access public --no-git-checks
+        run: node scripts/publish-npm-package.mjs packages/angular
       - if: needs.detect-changes.outputs.react == 'true'
-        run: pnpm --filter @maayo/react publish --access public --no-git-checks
+        run: node scripts/publish-npm-package.mjs packages/react
       - if: needs.detect-changes.outputs.nest == 'true'
-        run: pnpm --filter @maayo/nest publish --access public --no-git-checks
+        run: node scripts/publish-npm-package.mjs packages/nest
       - if: needs.detect-changes.outputs.express == 'true'
-        run: pnpm --filter @maayo/express publish --access public --no-git-checks
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: node scripts/publish-npm-package.mjs packages/express
 
   publish-spring:
     needs: detect-changes
