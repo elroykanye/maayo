@@ -12,8 +12,16 @@ test('runs JavaScript pnpm entry points through Node', () => {
 
 test('runs a native package-manager executable directly', () => {
   const invocation = resolvePnpmInvocation(process.execPath, ['--version']);
+  const setupPnpmInvocation = resolvePnpmInvocation(
+    '/home/runner/setup-pnpm/node_modules/.pnpm/pnpm@12.3.4/node_modules/pnpm/pnpm',
+    ['pack'],
+  );
 
   assert.equal(invocation.command, process.execPath);
   assert.deepEqual(invocation.args, ['--version']);
   assert.match(execFileSync(invocation.command, invocation.args, { encoding: 'utf8' }), /^v\d+/);
+  assert.deepEqual(setupPnpmInvocation, {
+    command: '/home/runner/setup-pnpm/node_modules/.pnpm/pnpm@12.3.4/node_modules/pnpm/pnpm',
+    args: ['pack'],
+  });
 });
