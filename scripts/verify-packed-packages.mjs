@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runPnpm } from './pnpm-cli.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const packageNames = [
@@ -18,15 +19,6 @@ const packageDirs = packageNames.map((name) => join(root, 'packages', name.slice
 const scratch = mkdtempSync(join(tmpdir(), 'maayo-packed-consumer-'));
 const tarballDir = join(scratch, 'tarballs');
 const consumerDir = join(scratch, 'consumer');
-
-function runPnpm(args, cwd) {
-  const pnpmCli = process.env.npm_execpath;
-  if (!pnpmCli) throw new Error('Run this proof through `pnpm test:pack`.');
-  execFileSync(process.execPath, [pnpmCli, ...args], {
-    cwd,
-    stdio: 'inherit',
-  });
-}
 
 try {
   mkdirSync(tarballDir);
