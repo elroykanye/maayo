@@ -1,4 +1,4 @@
-import type { Mutation } from '@maayo/protocol';
+import type { CheckpointProvider as ProtocolCheckpointProvider, Mutation } from '@maayo/protocol';
 import type { Request } from 'express';
 
 export interface SavedMutation {
@@ -20,6 +20,8 @@ export interface MaayoStore {
     lastMutationId: string,
     limit: number,
   ): Promise<SavedMutation[]>;
+  /** Return false when this compound cursor predates retained replay history. */
+  isCursorRetained?(channel: string, since: Date, lastMutationId: string): Promise<boolean>;
 }
 
 export interface ChannelAuthorizer {
@@ -27,8 +29,27 @@ export interface ChannelAuthorizer {
   canPull(req: Request, channel: string): boolean | Promise<boolean>;
 }
 
-export interface MaayoRouterOptions {
+export type CheckpointProvider = ProtocolCheckpointProvider<Request>;
+export type CheckpointProjectionKeyResolver = (
+  req: Request,
+  channel: string,
+) => string | Promise<string>;
+
+interface MaayoRouterBaseOptions {
   store: MaayoStore;
   authorizer?: ChannelAuthorizer;
   defaultLimit?: number;
 }
+
+export type MaayoRouterOptions = MaayoRouterBaseOptions & (
+  | {
+    checkpointProvider?: never;
+    checkpointProjectionKey?: never;
+  }
+  | {
+    /** Required because generic adapters cannot infer application projections or tables. */
+    checkpointProvider: CheckpointProvider;
+    /** Must partition checkpoints by every authorization input that can change visible rows. */
+    checkpointProjectionKey: CheckpointProjectionKeyResolver;
+  }
+);

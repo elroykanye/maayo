@@ -1,6 +1,7 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { MutationsController } from './mutations.controller';
 import { ChangesController } from './changes.controller';
+import { CheckpointController } from './checkpoint.controller';
 import { MAAYO_OPTIONS } from './maayo.constants';
 import type { MaayoModuleOptions, MaayoModuleAsyncOptions, MaayoOptionsFactory } from './maayo.options';
 
@@ -9,7 +10,7 @@ export class MaayoModule {
   static forRoot(options: MaayoModuleOptions): DynamicModule {
     return {
       module: MaayoModule,
-      controllers: [MutationsController, ChangesController],
+      controllers: [MutationsController, ChangesController, CheckpointController],
       providers: [{ provide: MAAYO_OPTIONS, useValue: options }],
     };
   }
@@ -18,7 +19,7 @@ export class MaayoModule {
     return {
       module: MaayoModule,
       imports: options.imports ?? [],
-      controllers: [MutationsController, ChangesController],
+      controllers: [MutationsController, ChangesController, CheckpointController],
       providers: createAsyncProviders(options),
     };
   }

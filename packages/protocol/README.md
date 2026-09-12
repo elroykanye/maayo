@@ -25,14 +25,19 @@ npm install @maayo/protocol
 | `ChangesQuery` | First-page query or a continuation with paired `since` and `lastMutationId` |
 | `DuplicateMutationError` | Runtime signal for an atomic mutation-ID uniqueness conflict |
 | `isDuplicateMutationError(error)` | Cross-ESM/CommonJS guard for the stable duplicate-conflict discriminator |
+| `CheckpointEnvelope` | Optional atomic clone payload with projection, cursor, merge metadata, and integrity |
+| `CheckpointProvider` | Application-owned server seam for a consistent authorized checkpoint |
+| `CheckpointLwwMergeMetadataValue` | Durable LWW winner tuple independent of bounded audit history |
+| `CHECKPOINT_REQUIRED` | Stable stale-cursor recovery code |
 
 ## Protocol overview
 
-Two endpoints, any backend language:
+Two required endpoints and one optional checkpoint endpoint, in any backend language:
 
 ```
 POST /sync/mutations   — client pushes queued writes
 GET  /sync/changes     — client pulls server-side deltas
+GET  /sync/checkpoint  — optional authorized materialized clone
 ```
 
 ## Related packages

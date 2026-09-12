@@ -1,11 +1,19 @@
 import { Router } from 'express';
+import { brotliCompress, gzip } from 'node:zlib';
+import { createHash } from 'node:crypto';
+import { promisify } from 'node:util';
 import type {
   BatchMutationsRequest,
   AcceptedMutation,
   RejectedMutation,
   Cursor,
 } from '@maayo/protocol';
-import { isDuplicateMutationError, SYSTEM_AUTHOR } from '@maayo/protocol';
+import {
+  CHECKPOINT_REQUIRED,
+  isCheckpointEnvelope,
+  isDuplicateMutationError,
+  SYSTEM_AUTHOR,
+} from '@maayo/protocol';
 import type { MaayoRouterOptions, SavedMutation } from './interfaces';
 
 export function maayoRouter(options: MaayoRouterOptions): Router {
@@ -76,6 +84,11 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
         res.status(400).json({ error: 'since must be a valid ISO-8601 timestamp' });
         return;
       }
+      if (store.isCursorRetained
+        && !(await store.isCursorRetained(channel, sinceDate, lastMutationId))) {
+        res.status(409).json({ code: CHECKPOINT_REQUIRED, channel });
+        return;
+      }
       if (!store.findChangesByCursor) {
         res.status(501).json({ error: 'store does not support compound-cursor pagination' });
         return;
@@ -96,7 +109,105 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
     });
   });
 
+  if (options.checkpointProvider) {
+    router.get('/checkpoint', async (req, res) => {
+      const channel = req.query['channel'];
+      if (typeof channel !== 'string' || channel.trim().length === 0) {
+        res.status(400).json({ error: 'channel is required' });
+        return;
+      }
+      if (authorizer && !(await authorizer.canPull(req, channel))) {
+        res.status(403).json({ error: `unauthorized for channel ${channel}` });
+        return;
+      }
+
+      const projectionKey = await options.checkpointProjectionKey(req, channel);
+      if (!projectionKey.trim()) {
+        res.status(500).json({ error: 'checkpoint projection key must not be blank' });
+        return;
+      }
+      const checkpoint = await options.checkpointProvider.getCheckpoint({
+        request: req,
+        channel,
+        projectionKey,
+        ifNoneMatch: req.header('If-None-Match'),
+      });
+      if (!checkpoint) {
+        res.status(404).json({ error: `checkpoint unavailable for channel ${channel}` });
+        return;
+      }
+      if (!isCheckpointEnvelope(checkpoint)
+        || checkpoint.channel !== channel
+        || checkpoint.projectionKey !== projectionKey) {
+        res.status(500).json({ error: 'checkpoint provider returned a mismatched or invalid envelope' });
+        return;
+      }
+
+      await sendCheckpoint(req.header('Accept-Encoding'), req.header('If-None-Match'), checkpoint, res);
+    });
+  }
+
   return router;
+}
+
+const gzipAsync = promisify(gzip);
+const brotliCompressAsync = promisify(brotliCompress);
+
+async function sendCheckpoint(
+  acceptEncoding: string | undefined,
+  ifNoneMatch: string | undefined,
+  checkpoint: import('@maayo/protocol').CheckpointEnvelope,
+  res: import('express').Response,
+): Promise<void> {
+  const etag = checkpointEtag(checkpoint);
+  res.set('ETag', etag);
+  res.set('Cache-Control', 'private, no-cache');
+  res.vary('Accept-Encoding');
+  res.vary('Authorization');
+  res.vary('Cookie');
+  if (ifNoneMatch?.split(',').map((value) => value.trim()).includes(etag)) {
+    res.status(304).end();
+    return;
+  }
+
+  const body = Buffer.from(JSON.stringify(checkpoint));
+  const encoding = chooseEncoding(acceptEncoding);
+  const encoded = encoding === 'br'
+    ? await brotliCompressAsync(body)
+    : encoding === 'gzip'
+      ? await gzipAsync(body)
+      : body;
+  res.status(200).type('application/json');
+  if (encoding !== 'identity') res.set('Content-Encoding', encoding);
+  res.send(encoded);
+}
+
+function checkpointEtag(checkpoint: import('@maayo/protocol').CheckpointEnvelope): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([
+      checkpoint.channel,
+      checkpoint.projectionKey,
+      checkpoint.projectionRevision,
+      checkpoint.integrity.checksum,
+    ]))
+    .digest('base64url');
+  return `W/"checkpoint-${digest}"`;
+}
+
+function chooseEncoding(header: string | undefined): 'br' | 'gzip' | 'identity' {
+  const quality = new Map<string, number>();
+  for (const part of (header ?? '').split(',')) {
+    const [rawName, ...params] = part.trim().toLowerCase().split(';');
+    if (!rawName) continue;
+    const qParam = params.find((value) => value.trim().startsWith('q='));
+    const parsed = qParam ? Number(qParam.trim().slice(2)) : 1;
+    quality.set(rawName, Number.isFinite(parsed) ? parsed : 0);
+  }
+  const br = quality.get('br') ?? quality.get('*') ?? 0;
+  const gzipQuality = quality.get('gzip') ?? quality.get('*') ?? 0;
+  if (br > 0 && br >= gzipQuality) return 'br';
+  if (gzipQuality > 0) return 'gzip';
+  return 'identity';
 }
 
 async function persistWithDuplicateRecovery(

@@ -27,6 +27,12 @@ dependencies {
     compileOnly("jakarta.servlet:jakarta.servlet-api:6.1.0")
 
     implementation(kotlin("reflect"))
+    implementation("com.aayushatharva.brotli4j:brotli4j:1.23.0")
+    runtimeOnly("com.aayushatharva.brotli4j:native-linux-x86_64:1.23.0")
+    runtimeOnly("com.aayushatharva.brotli4j:native-linux-aarch64:1.23.0")
+    runtimeOnly("com.aayushatharva.brotli4j:native-windows-x86_64:1.23.0")
+    runtimeOnly("com.aayushatharva.brotli4j:native-osx-x86_64:1.23.0")
+    runtimeOnly("com.aayushatharva.brotli4j:native-osx-aarch64:1.23.0")
 
     // Test
     testImplementation("org.springframework.boot:spring-boot-starter-test:$springBootVersion")
