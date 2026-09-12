@@ -66,6 +66,8 @@ data class CheckpointRow(
     val payload: String?,
     val tombstone: Boolean = false,
     val deletedAt: String? = null,
+    /** For LWW rows include policy=LWW, clientTs, deviceId, and mutationId so
+     * clients retain deterministic tie-break state after bounded audit eviction. */
     val mergeMetadata: Map<String, String> = emptyMap(),
 )
 

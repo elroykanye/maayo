@@ -1,6 +1,6 @@
 import type { Cursor, Mutation } from '@maayo/protocol';
 import type { Table } from 'dexie';
-import type { HistoryRow, MaayoDatabase } from './database';
+import type { HistoryRow, LwwWinnerRow, MaayoDatabase } from './database';
 import type { ApplyMutationHook, ApplyOutcome, ApplyResult } from './pull';
 import {
   applyPolicyMutation,
@@ -94,19 +94,26 @@ async function applyFoldedPage(
   metaTable: Table<PolicyMeta, string> | undefined,
   observations: Array<[Mutation, ApplyOutcome]>,
 ): Promise<ApplyResult> {
+  const existingCursor = await db._cursors.get(page.channel);
+  const lwwWinners: Record<string, LwwWinnerRow> = { ...(existingCursor?.lwwWinners ?? {}) };
   const states = new Map<string, EntityState>();
   for (const [entityType, table] of tables) {
     const ids = [...new Set(page.mutations
       .filter((mutation) => mutation.entityType === entityType)
       .map((mutation) => mutation.entityId))];
     const rows = await table.bulkGet(ids);
-    ids.forEach((id, index) => states.set(entityKey(entityType, id), {
-      table,
-      row: rows[index] as Record<string, unknown> | undefined,
-      changed: false,
-      deleted: false,
-      metaTouched: false,
-    }));
+    ids.forEach((id, index) => {
+      const key = entityKey(entityType, id);
+      const storedWinner = lwwWinners[key];
+      states.set(key, {
+        table,
+        row: rows[index] as Record<string, unknown> | undefined,
+        changed: false,
+        deleted: false,
+        metaTouched: false,
+        winner: storedWinner ? fromStoredWinner(storedWinner) : undefined,
+      });
+    });
   }
 
   if (metaTable) {
@@ -123,6 +130,7 @@ async function applyFoldedPage(
     if (pairs.length > 0) {
       const history = await db._history.where('[entityType+entityId]').anyOf(pairs).toArray();
       for (const row of history) {
+        if (row.channel && row.channel !== page.channel) continue;
         const state = states.get(entityKey(row.entityType, row.entityId));
         if (state && (!state.winner || compareMutation(row, state.winner) > 0)) {
           state.winner = row;
@@ -150,7 +158,7 @@ async function applyFoldedPage(
       continue;
     }
     applied += 1;
-    historyRows.push(toHistoryRow(mutation, receivedAt));
+    historyRows.push(toHistoryRow(mutation, receivedAt, page.channel));
   }
 
   for (const [, table] of tables) {
@@ -172,8 +180,18 @@ async function applyFoldedPage(
       .map((state) => state.meta!);
     if (metas.length > 0) await metaTable.bulkPut(metas);
   }
-  await persistRemoteHistory(db, historyRows, options.remoteHistoryLimit);
-  await db._cursors.put({ channel: page.channel, ...page.cursor });
+  if (!policyOptions) {
+    for (const [key, state] of states) {
+      if (state.winner) lwwWinners[key] = toStoredWinner(state.winner);
+    }
+  }
+  await persistRemoteHistory(db, page.channel, historyRows, options.remoteHistoryLimit);
+  await db._cursors.put({
+    ...existingCursor,
+    channel: page.channel,
+    ...page.cursor,
+    lwwWinners: policyOptions ? existingCursor?.lwwWinners : lwwWinners,
+  });
   return { applied, skipped };
 }
 
@@ -209,6 +227,12 @@ function foldPolicy(
 
 function foldLww(state: EntityState, mutation: Mutation, softDelete: boolean): ApplyOutcome {
   if (mutation.op === 'DELETE' && !softDelete) {
+    if (state.row && losesToExisting(state.row, mutation.clientTs, mutation, state.winner)) {
+      return 'skipped';
+    }
+    if (!state.row && state.winner && compareMutation(mutation, state.winner) <= 0) {
+      return 'skipped';
+    }
     state.row = undefined;
     state.changed = true;
     state.deleted = true;
@@ -222,11 +246,9 @@ function foldLww(state: EntityState, mutation: Mutation, softDelete: boolean): A
     const incomingTs = mutation.op === 'DELETE'
       ? mutation.clientTs
       : String(payload['updatedAt'] ?? mutation.clientTs);
-    const existingTs = String(state.row['updatedAt'] ?? state.row['deletedAt'] ?? '');
-    if (incomingTs < existingTs) return 'skipped';
-    if (incomingTs === existingTs && state.winner && compareMutation(mutation, state.winner) <= 0) {
-      return 'skipped';
-    }
+    if (losesToExisting(state.row, incomingTs, mutation, state.winner)) return 'skipped';
+  } else if (state.winner && compareMutation(mutation, state.winner) <= 0) {
+    return 'skipped';
   }
 
   state.row = mutation.op === 'DELETE'
@@ -238,43 +260,71 @@ function foldLww(state: EntityState, mutation: Mutation, softDelete: boolean): A
   return 'applied';
 }
 
+function losesToExisting(
+  row: Record<string, unknown>,
+  incomingTs: string,
+  mutation: Pick<Mutation, 'clientTs' | 'deviceId' | 'id'>,
+  winner: Pick<Mutation, 'clientTs' | 'deviceId' | 'id'> | undefined,
+): boolean {
+  const existingTs = String(row['updatedAt'] ?? row['deletedAt'] ?? '');
+  if (incomingTs < existingTs) return true;
+  return incomingTs === existingTs && Boolean(winner && compareMutation(mutation, winner) <= 0);
+}
+
 async function applyCustomPage(
   db: MaayoDatabase,
   page: MutationPage,
   options: ApplyMutationPageOptions,
   observations: Array<[Mutation, ApplyOutcome]>,
 ): Promise<ApplyResult> {
+  const existingCursor = await db._cursors.get(page.channel);
+  const lwwWinners: Record<string, LwwWinnerRow> = { ...(existingCursor?.lwwWinners ?? {}) };
   let applied = 0;
   let skipped = 0;
   const historyRows: HistoryRow[] = [];
   const receivedAt = new Date().toISOString();
   for (const mutation of page.mutations) {
-    const outcome = await options.applyMutation!(db, mutation, async () => applyDefaultOne(db, mutation, options.softDelete === true));
+    const key = entityKey(mutation.entityType, mutation.entityId);
+    let winner = await resolveLwwWinner(db, page.channel, mutation, lwwWinners[key]);
+    const outcome = await options.applyMutation!(db, mutation, async () => {
+      const delegated = await applyDefaultOne(db, mutation, options.softDelete === true, winner);
+      if (delegated === 'applied') winner = mutation;
+      return delegated;
+    });
     observations.push([mutation, outcome]);
     if (outcome === 'skipped') skipped += 1;
     else {
       applied += 1;
-      historyRows.push(toHistoryRow(mutation, receivedAt));
+      historyRows.push(toHistoryRow(mutation, receivedAt, page.channel));
     }
+    if (winner) lwwWinners[key] = toStoredWinner(winner);
   }
-  await persistRemoteHistory(db, historyRows, options.remoteHistoryLimit);
-  await db._cursors.put({ channel: page.channel, ...page.cursor });
+  await persistRemoteHistory(db, page.channel, historyRows, options.remoteHistoryLimit);
+  await db._cursors.put({ ...existingCursor, channel: page.channel, ...page.cursor, lwwWinners });
   return { applied, skipped };
 }
 
-async function applyDefaultOne(db: MaayoDatabase, mutation: Mutation, softDelete: boolean): Promise<ApplyOutcome> {
+async function applyDefaultOne(
+  db: MaayoDatabase,
+  mutation: Mutation,
+  softDelete: boolean,
+  winner: Pick<Mutation, 'clientTs' | 'deviceId' | 'id'> | undefined,
+): Promise<ApplyOutcome> {
   let table: Table<Record<string, unknown>, string>;
   try { table = db.table(mutation.entityType); } catch { return 'skipped'; }
   const existing = await table.get(mutation.entityId);
   if (mutation.op === 'DELETE' && !softDelete) {
+    if (existing && losesToExisting(existing, mutation.clientTs, mutation, winner)) return 'skipped';
+    if (!existing && winner && compareMutation(mutation, winner) <= 0) return 'skipped';
     await table.delete(mutation.entityId);
     return 'applied';
   }
   const payload = mutation.op === 'DELETE' ? {} : JSON.parse(mutation.payload) as Record<string, unknown>;
   if (existing) {
     const incomingTs = mutation.op === 'DELETE' ? mutation.clientTs : String(payload['updatedAt'] ?? mutation.clientTs);
-    const existingTs = String(existing['updatedAt'] ?? existing['deletedAt'] ?? '');
-    if (incomingTs < existingTs) return 'skipped';
+    if (losesToExisting(existing, incomingTs, mutation, winner)) return 'skipped';
+  } else if (winner && compareMutation(mutation, winner) <= 0) {
+    return 'skipped';
   }
   await table.put(mutation.op === 'DELETE'
     ? { id: mutation.entityId, deletedAt: mutation.clientTs }
@@ -282,12 +332,31 @@ async function applyDefaultOne(db: MaayoDatabase, mutation: Mutation, softDelete
   return 'applied';
 }
 
-function toHistoryRow(mutation: Mutation, receivedAt: string): HistoryRow {
-  return { ...mutation, receivedAt, source: 'remote' };
+async function resolveLwwWinner(
+  db: MaayoDatabase,
+  channel: string,
+  mutation: Mutation,
+  stored: LwwWinnerRow | undefined,
+): Promise<Pick<Mutation, 'clientTs' | 'deviceId' | 'id'> | undefined> {
+  let winner = stored ? fromStoredWinner(stored) : undefined;
+  const history = await db._history
+    .where('[entityType+entityId]')
+    .equals([mutation.entityType, mutation.entityId])
+    .toArray();
+  for (const row of history) {
+    if (row.channel && row.channel !== channel) continue;
+    if (!winner || compareMutation(row, winner) > 0) winner = row;
+  }
+  return winner;
+}
+
+function toHistoryRow(mutation: Mutation, receivedAt: string, channel: string): HistoryRow {
+  return { ...mutation, channel, receivedAt, source: 'remote' };
 }
 
 async function persistRemoteHistory(
   db: MaayoDatabase,
+  channel: string,
   incoming: HistoryRow[],
   requestedLimit: number | undefined,
 ): Promise<void> {
@@ -297,7 +366,10 @@ async function persistRemoteHistory(
     return;
   }
   const incomingIds = new Set(incoming.map((row) => row.id));
-  const existing = (await db._history.toArray()).filter((row) => row.source === 'remote' && !incomingIds.has(row.id));
+  const existing = (await db._history.toArray()).filter((row) =>
+    row.source === 'remote'
+    && row.channel === channel
+    && !incomingIds.has(row.id));
   const combined = [...existing, ...incoming];
   const kept = limit === 0 ? [] : combined.slice(-limit);
   const keptIds = new Set(kept.map((row) => row.id));
@@ -305,6 +377,14 @@ async function persistRemoteHistory(
   const incomingKept = incoming.filter((row) => keptIds.has(row.id));
   if (deleteIds.length > 0) await db._history.bulkDelete(deleteIds);
   if (incomingKept.length > 0) await db._history.bulkPut(incomingKept);
+}
+
+function fromStoredWinner(winner: LwwWinnerRow): Pick<Mutation, 'clientTs' | 'deviceId' | 'id'> {
+  return { clientTs: winner.clientTs, deviceId: winner.deviceId, id: winner.mutationId };
+}
+
+function toStoredWinner(winner: Pick<Mutation, 'clientTs' | 'deviceId' | 'id'>): LwwWinnerRow {
+  return { clientTs: winner.clientTs, deviceId: winner.deviceId, mutationId: winner.id };
 }
 
 function normalizeHistoryLimit(value: number | undefined): number {

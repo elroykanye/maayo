@@ -6,7 +6,7 @@ import type {
   Mutation,
 } from '@maayo/protocol';
 import type { Table } from 'dexie';
-import type { HistoryRow, MaayoDatabase } from './database';
+import type { CursorRow, HistoryRow, LwwWinnerRow, MaayoDatabase } from './database';
 
 export const CHECKPOINT_PROTOCOL_VERSION = 1 as const;
 
@@ -52,6 +52,13 @@ export async function installCheckpoint(
 ): Promise<void> {
   await validateCheckpoint(envelope, options);
 
+  const replaceEntityTypes = new Set(options.replaceEntityTypes);
+  const unsupportedRow = envelope.rows.find((row) => !replaceEntityTypes.has(row.entityType));
+  if (unsupportedRow) {
+    throw new Error(`Checkpoint entity type is not configured for replacement: ${unsupportedRow.entityType}`);
+  }
+  const incomingOwnedRows = envelope.rows.map((row) => checkpointEntityKey(row.entityType, row.entityId));
+
   const tables = new Map<string, Table<Record<string, unknown>, string>>();
   for (const entityType of new Set([...options.replaceEntityTypes, ...envelope.rows.map((row) => row.entityType)])) {
     try {
@@ -69,10 +76,20 @@ export async function installCheckpoint(
   if (metaTable) transactionTables.push(metaTable);
 
   await db.transaction('rw', transactionTables, async () => {
-    for (const [entityType, table] of tables) {
-      if (!options.replaceEntityTypes.includes(entityType)) continue;
-      const existingKeys = await table.toCollection().primaryKeys() as string[];
-      if (existingKeys.length > 0) await table.bulkDelete(existingKeys);
+    const currentCursor = await db._cursors.get(envelope.channel);
+    const otherCursors = (await db._cursors.toArray()).filter((cursor) => cursor.channel !== envelope.channel);
+    assertTrackedChannelIsolation(currentCursor, otherCursors, incomingOwnedRows, replaceEntityTypes);
+    const clearWholeTables = !currentCursor?.checkpointRows && !otherCursors.some(hasMaterializedState);
+    const previousOwnedRows = currentCursor?.checkpointRows ?? [];
+
+    if (clearWholeTables) {
+      for (const [entityType, table] of tables) {
+        if (!replaceEntityTypes.has(entityType)) continue;
+        const existingKeys = await table.toCollection().primaryKeys() as string[];
+        if (existingKeys.length > 0) await table.bulkDelete(existingKeys);
+      }
+    } else {
+      await deleteOwnedRows(tables, previousOwnedRows, replaceEntityTypes);
     }
 
     for (const [entityType, table] of tables) {
@@ -83,14 +100,31 @@ export async function installCheckpoint(
     }
 
     if (metaTable) {
-      const existingMetaKeys = await metaTable.toCollection().primaryKeys() as string[];
+      const existingMetaKeys = clearWholeTables
+        ? await metaTable.toCollection().primaryKeys() as string[]
+        : previousOwnedRows
+            .map(parseCheckpointEntityKey)
+            .filter(([entityType]) => replaceEntityTypes.has(entityType))
+            .map(([entityType, entityId]) => `${entityType}:${entityId}`);
       if (existingMetaKeys.length > 0) await metaTable.bulkDelete(existingMetaKeys);
       const metadata = normalizeMetadata(envelope);
       if (metadata.length > 0) await metaTable.bulkPut(metadata);
     }
 
     await replaceRemoteHistory(db, envelope, options.remoteHistoryLimit);
-    await db._cursors.put({ channel: envelope.channel, ...envelope.throughCursor });
+    const lwwWinners = nextLwwWinners(currentCursor, previousOwnedRows, replaceEntityTypes, envelope);
+    const retainedOwnedRows = previousOwnedRows.filter((key) => {
+      const [entityType] = parseCheckpointEntityKey(key);
+      return !replaceEntityTypes.has(entityType);
+    });
+    await db._cursors.put({
+      channel: envelope.channel,
+      ...envelope.throughCursor,
+      checkpointRows: [...retainedOwnedRows, ...incomingOwnedRows],
+      checkpointProjectionKey: envelope.projectionKey,
+      checkpointProjectionRevision: envelope.projectionRevision,
+      lwwWinners,
+    });
   });
 }
 
@@ -135,13 +169,111 @@ function normalizeMergeMetadata(item: CheckpointMergeMetadata): Record<string, u
   };
 }
 
+function checkpointEntityKey(entityType: string, entityId: string): string {
+  return JSON.stringify([entityType, entityId]);
+}
+
+function parseCheckpointEntityKey(key: string): [string, string] {
+  const value = JSON.parse(key) as unknown;
+  if (!Array.isArray(value) || value.length !== 2
+    || typeof value[0] !== 'string' || typeof value[1] !== 'string') {
+    throw new Error('Invalid stored checkpoint ownership key');
+  }
+  return [value[0], value[1]];
+}
+
+function hasMaterializedState(cursor: CursorRow): boolean {
+  return Boolean(cursor.checkpointRows?.length || cursor.lastMutationId || cursor.lastReceivedAt);
+}
+
+function assertTrackedChannelIsolation(
+  currentCursor: CursorRow | undefined,
+  otherCursors: CursorRow[],
+  incomingOwnedRows: string[],
+  replaceEntityTypes: Set<string>,
+): void {
+  const untracked = otherCursors.find((cursor) =>
+    hasMaterializedState(cursor) && cursor.checkpointRows === undefined);
+  if (untracked) {
+    throw new Error(
+      `Cannot safely install checkpoint beside untracked channel ${untracked.channel}; use a separate database or re-clone channels`,
+    );
+  }
+  if (currentCursor && hasMaterializedState(currentCursor)
+    && currentCursor.checkpointRows === undefined && otherCursors.some(hasMaterializedState)) {
+    throw new Error('Cannot safely replace an untracked channel in a shared checkpoint database');
+  }
+
+  const otherOwners = new Map<string, string>();
+  for (const cursor of otherCursors) {
+    for (const key of cursor.checkpointRows ?? []) {
+      const [entityType] = parseCheckpointEntityKey(key);
+      if (replaceEntityTypes.has(entityType)) otherOwners.set(key, cursor.channel);
+    }
+  }
+  for (const key of incomingOwnedRows) {
+    const owner = otherOwners.get(key);
+    if (owner) {
+      const [entityType, entityId] = parseCheckpointEntityKey(key);
+      throw new Error(`Checkpoint row ${entityType}/${entityId} is already owned by channel ${owner}`);
+    }
+  }
+}
+
+async function deleteOwnedRows(
+  tables: Map<string, Table<Record<string, unknown>, string>>,
+  ownedRows: string[],
+  replaceEntityTypes: Set<string>,
+): Promise<void> {
+  const idsByType = new Map<string, string[]>();
+  for (const key of ownedRows) {
+    const [entityType, entityId] = parseCheckpointEntityKey(key);
+    if (!replaceEntityTypes.has(entityType)) continue;
+    const ids = idsByType.get(entityType) ?? [];
+    ids.push(entityId);
+    idsByType.set(entityType, ids);
+  }
+  for (const [entityType, ids] of idsByType) {
+    const table = tables.get(entityType);
+    if (table && ids.length > 0) await table.bulkDelete(ids);
+  }
+}
+
+function nextLwwWinners(
+  currentCursor: CursorRow | undefined,
+  previousOwnedRows: string[],
+  replaceEntityTypes: Set<string>,
+  envelope: CheckpointEnvelope,
+): Record<string, LwwWinnerRow> {
+  const winners = { ...(currentCursor?.lwwWinners ?? {}) };
+  for (const key of previousOwnedRows) {
+    const [entityType, entityId] = parseCheckpointEntityKey(key);
+    if (replaceEntityTypes.has(entityType)) delete winners[`${entityType}\u0000${entityId}`];
+  }
+  for (const metadata of envelope.mergeMetadata) {
+    const value = metadata.value;
+    if (value['policy'] !== 'LWW'
+      || typeof value['clientTs'] !== 'string'
+      || typeof value['deviceId'] !== 'string'
+      || typeof value['mutationId'] !== 'string') continue;
+    winners[`${metadata.entityType}\u0000${metadata.entityId}`] = {
+      clientTs: value['clientTs'],
+      deviceId: value['deviceId'],
+      mutationId: value['mutationId'],
+    };
+  }
+  return winners;
+}
+
 async function replaceRemoteHistory(
   db: MaayoDatabase,
   envelope: CheckpointEnvelope,
   requestedLimit: number | undefined,
 ): Promise<void> {
   const all = await db._history.toArray();
-  const remoteIds = all.filter((row) => row.source === 'remote').map((row) => row.id);
+  const remoteIds = all
+    .filter((row) => row.source === 'remote' && row.channel === envelope.channel)
+    .map((row) => row.id);
   if (remoteIds.length > 0) await db._history.bulkDelete(remoteIds);
   const limit = requestedLimit === Infinity
     ? Infinity
@@ -186,6 +318,16 @@ function isValidCheckpointEnvelope(value: unknown): value is CheckpointEnvelope 
     || value.integrity['algorithm'] !== 'sha-256'
     || value.integrity['scope'] !== 'rows-and-merge-metadata'
     || !isNonEmptyString(value.integrity['checksum'])) return false;
+  return hasUniqueEntityKeys(value.rows) && hasUniqueEntityKeys(value.mergeMetadata);
+}
+
+function hasUniqueEntityKeys(rows: Array<{ entityType: string; entityId: string }>): boolean {
+  const keys = new Set<string>();
+  for (const row of rows) {
+    const key = checkpointEntityKey(row.entityType, row.entityId);
+    if (keys.has(key)) return false;
+    keys.add(key);
+  }
   return true;
 }
 

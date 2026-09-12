@@ -78,7 +78,7 @@ export interface ApplyResult {
 export async function pull(
   db: MaayoDatabase,
   opts: PullOptions,
-): Promise<{ cursor: ChangesResponse['cursor']; result: ApplyResult; hasMore: boolean }> {
+): Promise<{ cursor: ChangesResponse['cursor']; result: ApplyResult; hasMore: boolean; entities: number }> {
   const cursor = await db._cursors.get(opts.channel);
   const params = new URLSearchParams({ channel: opts.channel });
   if (cursor?.lastReceivedAt) params.set('since', cursor.lastReceivedAt);
@@ -102,7 +102,12 @@ export async function pull(
     cursor: data.cursor,
   }, opts);
 
-  return { cursor: data.cursor, result, hasMore: data.hasMore };
+  return {
+    cursor: data.cursor,
+    result,
+    hasMore: data.hasMore,
+    entities: new Set(data.mutations.map((mutation) => `${mutation.entityType}\u0000${mutation.entityId}`)).size,
+  };
 }
 
 function isCheckpointRequiredBody(value: unknown): value is { code: 'CHECKPOINT_REQUIRED'; channel: string } {

@@ -1,5 +1,5 @@
 export { openDatabase } from './database';
-export type { MaayoDatabase, OutboxRow, CursorRow, HistoryRow, MigrationDef, UserTableSchema } from './database';
+export type { MaayoDatabase, OutboxRow, CursorRow, HistoryRow, LwwWinnerRow, MigrationDef, UserTableSchema } from './database';
 
 export {
   enqueue,

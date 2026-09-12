@@ -23,6 +23,7 @@ export type SyncPhase =
   | 'push'
   | 'checkpoint'
   | 'checkpoint-transfer'
+  | 'checkpoint-decode'
   | 'checkpoint-transaction'
   | 'pull'
   | 'idle';
@@ -32,7 +33,11 @@ export interface SyncTelemetryEvent {
   channel?: string;
   status: 'start' | 'end' | 'skip' | 'error';
   rows?: number;
+  entities?: number;
   mutations?: number;
+  bytes?: number;
+  pages?: number;
+  budgetMs?: number;
   elapsedMs?: number;
   terminalState?: SyncStatus;
 }
@@ -42,6 +47,8 @@ export interface CheckpointSyncConfig extends Omit<CheckpointInstallOptions, 'ex
   projectionKey: string | ((channel: string) => string | Promise<string>);
   /** Optional ETag reuse hook; return a known checkpoint validator for this channel/projection. */
   etag?: string | ((channel: string, projectionKey: string) => string | undefined | Promise<string | undefined>);
+  /** Abort the complete push + checkpoint + tail cycle after this budget. */
+  hardBudgetMs?: number;
 }
 
 export interface SyncConfig {
@@ -119,6 +126,7 @@ export class SyncEngine {
   private _started = false;
   private _syncInFlight: Promise<void> | null = null;
   private _syncAbortController: AbortController | null = null;
+  private _activeBudgetMs: number | undefined;
 
   constructor(private readonly config: SyncConfig) {
     this.db = openDatabase(config.dbName, config.tables, config.migrations);
@@ -210,10 +218,17 @@ export class SyncEngine {
   async sync(): Promise<void> {
     if (this._syncInFlight) return this._syncInFlight;
     const controller = new AbortController();
+    const hardBudgetMs = normalizeHardBudget(this.config.checkpoint?.hardBudgetMs);
+    this._activeBudgetMs = hardBudgetMs;
+    const budgetTimer = hardBudgetMs === undefined ? undefined : setTimeout(() => {
+      controller.abort(new DOMException(`Sync hard budget exceeded after ${hardBudgetMs}ms`, 'TimeoutError'));
+    }, hardBudgetMs);
     this._syncAbortController = controller;
     this._syncInFlight = this._runSync(controller.signal).finally(() => {
+      if (budgetTimer !== undefined) clearTimeout(budgetTimer);
       this._syncInFlight = null;
       if (this._syncAbortController === controller) this._syncAbortController = null;
+      this._activeBudgetMs = undefined;
     });
     return this._syncInFlight;
   }
@@ -358,6 +373,8 @@ export class SyncEngine {
         channel,
         status: 'end',
         mutations: result.result.applied + result.result.skipped,
+        entities: result.entities,
+        pages: 1,
         elapsedMs: performance.now() - start,
       });
       return result;
@@ -393,7 +410,9 @@ export class SyncEngine {
     const projectionKey = await this._checkpointProjectionKey(channel, config);
     const url = new URL(`${this.config.baseUrl}/sync/checkpoint`);
     url.searchParams.set('channel', channel);
-    const etag = await this._checkpointEtag(channel, projectionKey, config);
+    const etag = reason === 'required'
+      ? undefined
+      : await this._checkpointEtag(channel, projectionKey, config);
     const start = performance.now();
     this._emitTelemetry({ phase: 'checkpoint', channel, status: 'start' });
     const envelope = await fetchWithTimeout(url, {
@@ -405,17 +424,33 @@ export class SyncEngine {
       },
       signal,
     }, async (response) => {
-      if (response.status === 304) return null;
+      if (response.status === 304) {
+        if (reason === 'required') {
+          throw new SyncHttpError('pull', 304, 'forced checkpoint recovery requires a response body');
+        }
+        return null;
+      }
       if (response.status === 404 && reason === 'fresh') return null;
       if (!response.ok) throw new SyncHttpError('pull', response.status, response.statusText);
       const transferStart = performance.now();
-      const body = await response.json() as CheckpointEnvelope;
+      const bytes = new Uint8Array(await response.arrayBuffer());
       this._emitTelemetry({
         phase: 'checkpoint-transfer',
         channel,
         status: 'end',
-        rows: body.rows.length,
+        bytes: bytes.byteLength,
         elapsedMs: performance.now() - transferStart,
+      });
+      const decodeStart = performance.now();
+      const body = JSON.parse(new TextDecoder().decode(bytes)) as CheckpointEnvelope;
+      const entities = new Set(body.rows.map((row) => `${row.entityType}\u0000${row.entityId}`)).size;
+      this._emitTelemetry({
+        phase: 'checkpoint-decode',
+        channel,
+        status: 'end',
+        rows: body.rows.length,
+        entities,
+        elapsedMs: performance.now() - decodeStart,
       });
       return body;
     }, this.config.requestTimeoutMs);
@@ -424,6 +459,7 @@ export class SyncEngine {
       return;
     }
 
+    signal.throwIfAborted();
     const transactionStart = performance.now();
     await installCheckpoint(this.db, envelope, {
       ...config,
@@ -431,11 +467,13 @@ export class SyncEngine {
       expectedProjectionKey: projectionKey,
       supportedProtocolVersion: CHECKPOINT_PROTOCOL_VERSION,
     });
+    signal.throwIfAborted();
     this._emitTelemetry({
       phase: 'checkpoint-transaction',
       channel,
       status: 'end',
       rows: envelope.rows.length,
+      entities: new Set(envelope.rows.map((row) => `${row.entityType}\u0000${row.entityId}`)).size,
       elapsedMs: performance.now() - transactionStart,
     });
     this._emitTelemetry({
@@ -443,6 +481,7 @@ export class SyncEngine {
       channel,
       status: 'end',
       rows: envelope.rows.length,
+      entities: new Set(envelope.rows.map((row) => `${row.entityType}\u0000${row.entityId}`)).size,
       elapsedMs: performance.now() - start,
     });
   }
@@ -480,7 +519,12 @@ export class SyncEngine {
     this._statusListeners.forEach((fn) => fn(s));
     if (this._coordinator.isLeader) this._coordinator.broadcastStatus(s);
     if (s === 'idle' || s === 'offline' || s === 'error') {
-      this._emitTelemetry({ phase: 'idle', status: 'end', terminalState: s });
+      this._emitTelemetry({
+        phase: 'idle',
+        status: 'end',
+        terminalState: s,
+        budgetMs: this._activeBudgetMs,
+      });
     }
   }
 
@@ -492,4 +536,12 @@ export class SyncEngine {
       console.error('[maayo] onTelemetry callback failed', err);
     }
   }
+}
+
+function normalizeHardBudget(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error('checkpoint.hardBudgetMs must be a positive finite number');
+  }
+  return Math.floor(value);
 }

@@ -89,7 +89,7 @@ describe('SyncEngine checkpoint sync', () => {
       });
     });
 
-    const telemetry: string[] = [];
+    const telemetry: Array<Record<string, unknown>> = [];
     const engine = new SyncEngine({
       baseUrl: 'http://test',
       dbName: `test-checkpoint-engine-fresh-${Math.random()}`,
@@ -101,7 +101,7 @@ describe('SyncEngine checkpoint sync', () => {
         supportedSchemaVersion: '1',
         replaceEntityTypes: ['Student'],
       },
-      onTelemetry: (event) => telemetry.push(`${event.phase}:${event.status}`),
+      onTelemetry: (event) => telemetry.push(event as unknown as Record<string, unknown>),
     });
 
     await engine.sync();
@@ -112,8 +112,15 @@ describe('SyncEngine checkpoint sync', () => {
       { id: 's-2', name: 'Grace' },
     ]);
     expect(await engine.db._cursors.get('org:1')).toMatchObject({ lastMutationId: 'm-tail' });
-    expect(telemetry).toContain('checkpoint:end');
-    expect(telemetry).toContain('checkpoint-transaction:end');
+    expect(telemetry.map((event) => `${event.phase}:${event.status}`)).toContain('checkpoint:end');
+    expect(telemetry.map((event) => `${event.phase}:${event.status}`)).toContain('checkpoint-transaction:end');
+    expect(telemetry).toContainEqual(expect.objectContaining({
+      phase: 'checkpoint-transfer', status: 'end', bytes: expect.any(Number),
+    }));
+    expect(telemetry).toContainEqual(expect.objectContaining({
+      phase: 'checkpoint-decode', status: 'end', entities: 1,
+    }));
+    expect(telemetry).toContainEqual(expect.objectContaining({ phase: 'pull', status: 'end', pages: 1 }));
   });
 
   it('pushes pending rows before replacing a stale retained cursor with a checkpoint', async () => {
@@ -179,6 +186,73 @@ describe('SyncEngine checkpoint sync', () => {
     expect(order.slice(0, 3)).toEqual(['push', 'pull', 'checkpoint']);
     expect(await engine.db._outbox.count()).toBe(0);
     expect(await engine.db.table('Student').toArray()).toEqual([{ id: 'remote', name: 'Remote' }]);
+  });
+
+  it('forces one unconditional checkpoint response when stale recovery has an ETag', async () => {
+    const checkpoint = await checkpointEnvelope({
+      throughCursor: { lastMutationId: 'm-checkpoint', lastReceivedAt: '2026-09-01T00:00:00.000Z' },
+      rows: [{ entityType: 'Student', entityId: 'remote', payload: { id: 'remote', name: 'Remote' } }],
+    });
+    let pulls = 0;
+    let checkpoints = 0;
+    (globalThis as Record<string, unknown>).fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/sync/checkpoint') {
+        checkpoints += 1;
+        const headers = new Headers(init?.headers);
+        if (headers.has('If-None-Match')) return new Response(null, { status: 304 });
+        return jsonResponse(checkpoint);
+      }
+      pulls += 1;
+      if (pulls > 3) throw new Error('recovery loop');
+      if (url.searchParams.get('lastMutationId') !== 'm-checkpoint') {
+        return jsonResponse({ code: 'CHECKPOINT_REQUIRED', channel: 'org:1' }, 409);
+      }
+      return jsonResponse({
+        channel: 'org:1', mutations: [], hasMore: false,
+        cursor: { lastMutationId: 'm-checkpoint', lastReceivedAt: '2026-09-01T00:00:00.000Z' },
+      });
+    });
+    const engine = new SyncEngine({
+      baseUrl: 'http://test', dbName: `test-checkpoint-engine-etag-${Math.random()}`, channels: ['org:1'],
+      tables: { Student: 'id' },
+      checkpoint: {
+        projectionKey: 'role:teacher:v3', etag: 'W/"known"', expectedProjectionRevision: 'grants:v1',
+        supportedSchemaVersion: '1', replaceEntityTypes: ['Student'],
+      },
+    });
+    await engine.db._cursors.put({
+      channel: 'org:1', lastMutationId: 'stale', lastReceivedAt: '2026-08-01T00:00:00.000Z',
+    });
+
+    await engine.sync();
+
+    expect(engine.status).toBe('idle');
+    expect({ pulls, checkpoints }).toEqual({ pulls: 2, checkpoints: 1 });
+  });
+
+  it('enforces the configured hard budget and reports it with terminal telemetry', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    (globalThis as Record<string, unknown>).fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      }));
+    const engine = new SyncEngine({
+      baseUrl: 'http://test', dbName: `test-checkpoint-engine-budget-${Math.random()}`, channels: ['org:1'],
+      tables: { Student: 'id' }, requestTimeoutMs: 1_000,
+      checkpoint: {
+        projectionKey: 'role:teacher:v3', expectedProjectionRevision: 'grants:v1',
+        supportedSchemaVersion: '1', replaceEntityTypes: ['Student'], hardBudgetMs: 25,
+      },
+      onTelemetry: (event) => events.push(event as unknown as Record<string, unknown>),
+    });
+    const started = performance.now();
+
+    await engine.sync();
+
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(engine.status).toBe('error');
+    expect(events.at(-1)).toMatchObject({ phase: 'idle', status: 'end', terminalState: 'error', budgetMs: 25 });
   });
 });
 

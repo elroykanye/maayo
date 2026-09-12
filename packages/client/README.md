@@ -66,6 +66,46 @@ engine.start();
 | `intervalMs` | `number` | Sync interval in ms, default `10_000` |
 | `requestTimeoutMs` | `number` | Headers-and-body deadline in ms, default `30_000`; timed-out rows remain queued |
 | `pushBatchSize` | `number` | Maximum ordered outbox rows per request, default `100` |
+| `checkpoint` | `CheckpointSyncConfig` | Optional checkpoint clone configuration; replay remains the fallback |
+
+### Checkpoint clone
+
+Configure checkpoints when the server exposes `GET /sync/checkpoint`:
+
+```ts
+checkpoint: {
+  projectionKey: channel => `${currentGrantRevision()}:${channel}`,
+  expectedProjectionRevision: 'grants-v7',
+  supportedSchemaVersion: 'students-v3',
+  replaceEntityTypes: ['students', 'classes'],
+  remoteHistoryLimit: 500,
+  hardBudgetMs: 10_000,
+}
+```
+
+The projection key must change whenever the caller's visible rows change. A forced stale-cursor
+recovery always requests a complete checkpoint body, pushes pending outbox work first, installs the
+checkpoint atomically, then tails changes after `throughCursor`.
+
+For built-in LWW, checkpoint producers must include one merge-metadata entry per row so equal-time
+future mutations remain deterministic after audit-history eviction:
+
+```json
+{
+  "entityType": "Student",
+  "entityId": "student-1",
+  "value": {
+    "policy": "LWW",
+    "clientTs": "2026-09-01T00:00:00Z",
+    "deviceId": "device-1",
+    "mutationId": "01H..."
+  }
+}
+```
+
+If several channels share entity tables, Maayo tracks row ownership per channel. A checkpoint cannot
+overwrite a key owned by another channel; use channel-scoped primary keys or separate databases when
+the same entity ID can legitimately have different projections in two channels.
 
 `openDatabase()` caches live handles by name. Closing a handle evicts it so the next open returns a
 working replacement; incompatible table or migration options for an already-live name are rejected.

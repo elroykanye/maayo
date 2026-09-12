@@ -24,6 +24,15 @@ export interface CheckpointMergeMetadata {
   value: JsonObject;
 }
 
+/** Standard merge metadata used by the client's built-in LWW policy. Keeping
+ * this tuple outside bounded audit history preserves deterministic ties. */
+export interface CheckpointLwwMergeMetadataValue extends JsonObject {
+  policy: 'LWW';
+  clientTs: string;
+  deviceId: string;
+  mutationId: string;
+}
+
 export interface CheckpointIntegrity {
   algorithm: 'sha-256';
   /** Hex, base64, or base64url SHA-256 digest supplied by the checkpoint producer. */

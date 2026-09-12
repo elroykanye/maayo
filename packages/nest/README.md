@@ -127,6 +127,8 @@ That's it. Your NestJS app now serves:
 | `store` | `MaayoStore` | Required. Your persistence implementation. |
 | `authorizer` | `ChannelAuthorizer` | Optional. Channel-level RBAC. Defaults to permit-all. |
 | `defaultLimit` | `number` | Max mutations per changes page. Default `500`. |
+| `checkpointProvider` | `CheckpointProvider` | Optional. Builds a consistent authorized snapshot and safe retention boundary. |
+| `checkpointProjectionKey` | `CheckpointProjectionKeyResolver` | Required with the provider; partitions artifacts by every authorization input. |
 
 ### `MaayoStore` interface
 
@@ -136,6 +138,7 @@ That's it. Your NestJS app now serves:
 | `saveAll(mutations)` | Persist a batch; return each with a server-assigned `receivedAt` |
 | `findChanges(channel, since, limit)` | Return the first page for a channel and sub-channels, ordered by `(receivedAt, id)` |
 | `findChangesByCursor(channel, since, lastMutationId, limit)` | Optional source-compatible seam required for continuation pages; continue strictly after the pair |
+| `isCursorRetained(channel, since, lastMutationId)` | Required when replay history is archived; return false before any unsafe partial tail is read |
 
 The endpoint accepts either neither cursor field or both `since` and `lastMutationId`. Incomplete or
 invalid cursors return `400`. A continuation against a store without `findChangesByCursor` returns

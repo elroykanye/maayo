@@ -113,6 +113,56 @@ describe('public bulk mutation-page apply', () => {
     expect(await db.table('Student').get('s-1')).toEqual({ id: 's-1', name: 'Before' });
     expect(await db._cursors.get('org:1')).toBeUndefined();
   });
+
+  it('keeps the deterministic equal-time LWW winner after bounded history eviction', async () => {
+    const cursor = (id: string) => ({ lastMutationId: id, lastReceivedAt: '2026-09-01T00:00:00.000Z' });
+    await applyMutationPage(db, {
+      channel: 'org:1',
+      mutations: [mutation({ id: 'winner-z', entityId: 'target', deviceId: 'z-device' })],
+      cursor: cursor('winner-z'),
+    }, { remoteHistoryLimit: 1 });
+    await applyMutationPage(db, {
+      channel: 'org:1',
+      mutations: [mutation({ id: 'other', entityId: 'other', deviceId: 'x-device', clientTs: '2026-09-01T00:00:01.000Z' })],
+      cursor: cursor('other'),
+    }, { remoteHistoryLimit: 1 });
+    await applyMutationPage(db, {
+      channel: 'org:1',
+      mutations: [mutation({
+        id: 'loser-a', entityId: 'target', deviceId: 'a-device',
+        payload: JSON.stringify({ name: 'Loser', updatedAt: '2026-09-01T00:00:00.000Z' }),
+      })],
+      cursor: cursor('loser-a'),
+    }, { remoteHistoryLimit: 1 });
+
+    expect(await db.table('Student').get('target')).toMatchObject({ name: 'Ada' });
+  });
+
+  it('does not let a stale hard delete remove a newer LWW row', async () => {
+    await db.table('Student').put({ id: 's-1', name: 'Newer', updatedAt: '2026-09-02T00:00:00.000Z' });
+    const result = await applyMutationPage(db, {
+      channel: 'org:1',
+      mutations: [mutation({ id: 'stale-delete', op: 'DELETE', clientTs: '2026-09-01T00:00:00.000Z' })],
+      cursor: { lastMutationId: 'stale-delete', lastReceivedAt: '2026-09-03T00:00:00.000Z' },
+    });
+
+    expect(result).toEqual({ applied: 0, skipped: 1 });
+    expect(await db.table('Student').get('s-1')).toMatchObject({ name: 'Newer' });
+  });
+
+  it('keeps the same gated LWW semantics when a custom hook delegates to defaultApply', async () => {
+    await db.table('Student').put({ id: 's-1', name: 'Newer', updatedAt: '2026-09-02T00:00:00.000Z' });
+    const result = await applyMutationPage(db, {
+      channel: 'org:1',
+      mutations: [mutation({ id: 'stale-delete', op: 'DELETE', clientTs: '2026-09-01T00:00:00.000Z' })],
+      cursor: { lastMutationId: 'stale-delete', lastReceivedAt: '2026-09-03T00:00:00.000Z' },
+    }, {
+      applyMutation: (_database, _mutation, defaultApply) => defaultApply(),
+    });
+
+    expect(result).toEqual({ applied: 0, skipped: 1 });
+    expect(await db.table('Student').get('s-1')).toMatchObject({ name: 'Newer' });
+  });
 });
 
 describe('checkpoint install', () => {
@@ -137,6 +187,97 @@ describe('checkpoint install', () => {
     expect(await db.table('Student').toArray()).toEqual([{ id: 's-1', name: 'Checkpoint Ada' }]);
     expect(await db._outbox.get(pending.id)).toMatchObject({ id: pending.id, rejectCode: 'FORBIDDEN' });
     expect(await db._cursors.get('org:1')).toMatchObject({ lastMutationId: 'm-checkpoint' });
+  });
+
+  it('preserves rows owned by another checkpoint channel', async () => {
+    for (const [channel, id] of [['org:1', 'one'], ['org:2', 'two']] as const) {
+      const envelope = await checkpoint({
+        channel,
+        projectionKey: `projection:${channel}`,
+        rows: [{ entityType: 'Student', entityId: id, payload: { id, channel } }],
+        mergeMetadata: [],
+        remoteHistory: [mutation({ id: `history-${id}`, channel, entityId: id })],
+      });
+      await installCheckpoint(db, envelope, {
+        expectedChannel: channel,
+        expectedProjectionKey: `projection:${channel}`,
+        supportedSchemaVersion: '1',
+        replaceEntityTypes: ['Student'],
+      });
+    }
+
+    expect((await db.table('Student').toArray()).map((row) => row.id).sort()).toEqual(['one', 'two']);
+    expect((await db._history.toArray()).filter((row) => row.source === 'remote').map((row) => row.id).sort())
+      .toEqual(['history-one', 'history-two']);
+
+    const replacement = await checkpoint({
+      channel: 'org:1', projectionKey: 'projection:org:1',
+      rows: [{ entityType: 'Student', entityId: 'one-new', payload: { id: 'one-new', channel: 'org:1' } }],
+      mergeMetadata: [],
+    });
+    await installCheckpoint(db, replacement, {
+      expectedChannel: 'org:1', expectedProjectionKey: 'projection:org:1',
+      supportedSchemaVersion: '1', replaceEntityTypes: ['Student'],
+    });
+    expect((await db.table('Student').toArray()).map((row) => row.id).sort()).toEqual(['one-new', 'two']);
+
+    const collision = await checkpoint({
+      channel: 'org:1', projectionKey: 'projection:org:1',
+      rows: [{ entityType: 'Student', entityId: 'two', payload: { id: 'two', channel: 'org:1' } }],
+      mergeMetadata: [],
+    });
+    await expect(installCheckpoint(db, collision, {
+      expectedChannel: 'org:1', expectedProjectionKey: 'projection:org:1',
+      supportedSchemaVersion: '1', replaceEntityTypes: ['Student'],
+    })).rejects.toThrow(/owned by channel org:2/);
+    expect(await db.table('Student').get('two')).toMatchObject({ channel: 'org:2' });
+  });
+
+  it('restores the previous replica and cursor after a checkpoint write fails and the database reopens', async () => {
+    const dbName = db.name;
+    await db.table('Student').put({ id: 'before', name: 'Before' });
+    await db._cursors.put({
+      channel: 'org:1', lastMutationId: 'before-cursor', lastReceivedAt: '2026-08-01T00:00:00.000Z',
+    });
+    const cursorWrite = vi.spyOn(db._cursors, 'put').mockRejectedValueOnce(new Error('disk full'));
+
+    await expect(installCheckpoint(db, await checkpoint(), {
+      expectedChannel: 'org:1', expectedProjectionKey: 'role:teacher:v3',
+      supportedSchemaVersion: '1', replaceEntityTypes: ['Student'], metaTable: '_syncmeta',
+    })).rejects.toThrow('disk full');
+    cursorWrite.mockRestore();
+    db.close({ disableAutoOpen: true });
+    db = openDatabase(dbName, { Student: 'id, name', Enrollment: 'id', _syncmeta: 'key' });
+
+    expect(await db.table('Student').toArray()).toEqual([{ id: 'before', name: 'Before' }]);
+    expect(await db._cursors.get('org:1')).toMatchObject({ lastMutationId: 'before-cursor' });
+  });
+
+  it('installs checkpoint LWW winner metadata independently of retained audit history', async () => {
+    const envelope = await checkpoint({
+      rows: [{
+        entityType: 'Student', entityId: 's-1',
+        payload: { id: 's-1', name: 'Winner', updatedAt: '2026-09-01T00:00:00.000Z' },
+      }],
+      mergeMetadata: [{
+        entityType: 'Student', entityId: 's-1',
+        value: { policy: 'LWW', clientTs: '2026-09-01T00:00:00.000Z', deviceId: 'z-device', mutationId: 'winner-z' },
+      }],
+    });
+    await installCheckpoint(db, envelope, {
+      expectedChannel: 'org:1', expectedProjectionKey: 'role:teacher:v3',
+      supportedSchemaVersion: '1', replaceEntityTypes: ['Student'], remoteHistoryLimit: 0,
+    });
+    await applyMutationPage(db, {
+      channel: 'org:1',
+      mutations: [mutation({
+        id: 'loser-a', entityId: 's-1', deviceId: 'a-device',
+        payload: JSON.stringify({ name: 'Loser', updatedAt: '2026-09-01T00:00:00.000Z' }),
+      })],
+      cursor: { lastMutationId: 'loser-a', lastReceivedAt: '2026-09-01T00:00:01.000Z' },
+    }, { remoteHistoryLimit: 0 });
+
+    expect(await db.table('Student').get('s-1')).toMatchObject({ name: 'Winner' });
   });
 
   it.each([

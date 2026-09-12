@@ -48,6 +48,7 @@ export async function markSynced(db: MaayoDatabase, ids: string[], receivedAt: s
   await db._history.bulkPut(
     rows.map((r) => ({
       id: r.id,
+      channel: r.channel,
       entityType: r.entityType,
       entityId: r.entityId,
       op: r.op,

@@ -174,6 +174,40 @@ Authorization: Bearer <token>
 
 ---
 
+## GET /sync/checkpoint (optional)
+
+Return an authorized, integrity-checked materialization from one consistent server view. The
+checkpoint and its `throughCursor` must be captured atomically; the client installs it and requests
+changes strictly after that compound cursor.
+
+The envelope contains `protocolVersion`, `schemaVersion`, `channel`, `projectionKey`,
+`projectionRevision`, `throughCursor`, structured `rows`, per-entity `mergeMetadata`, and SHA-256
+`integrity`. Servers should support gzip or Brotli and projection-scoped ETags with private caching.
+
+Generic adapters cannot infer application tables or authorization projections. Applications must
+supply a `CheckpointProvider` and a projection resolver whose key changes for every user, role,
+tenant, grant, or schema input that changes visible rows.
+
+Built-in LWW checkpoints must carry this merge-metadata value for every materialized row:
+
+```json
+{
+  "policy": "LWW",
+  "clientTs": "2026-09-01T00:00:00Z",
+  "deviceId": "device-1",
+  "mutationId": "01H..."
+}
+```
+
+This compact winner state is not audit history and must remain available after client-side remote
+history is evicted. Older authoritative audit data stays server-side.
+
+When `/sync/changes` receives a cursor older than retained replay history, return `409` with
+`{"code":"CHECKPOINT_REQUIRED","channel":"..."}` before reading or returning a partial tail.
+A replay-only server may omit `/sync/checkpoint`; fresh clients fall back to full replay on `404`.
+
+---
+
 ## GET /sync/schema (optional)
 
 The server's declared conflict policy per entity type, so a policy-aware
@@ -222,5 +256,6 @@ provideSync({
 |----------|----------------|-----------------|
 | Auth failure | `401` | `SyncStatus → 'error'`, retry next cycle |
 | Channel forbidden | `403` (changes) or mutation in `rejected` | Skip channel / backoff + quarantine (see above) |
+| Cursor older than retention | `409 CHECKPOINT_REQUIRED` | Push pending work, install an unconditional checkpoint body, then tail |
 | Server error | `5xx` | `SyncStatus → 'error'`, retry next cycle |
 | Offline | — | `SyncStatus → 'offline'`, outbox drains on reconnect |

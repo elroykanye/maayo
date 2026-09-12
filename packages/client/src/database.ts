@@ -31,11 +31,25 @@ export interface CursorRow {
   channel: string;
   lastMutationId: string | null;
   lastReceivedAt: string | null;
+  /** Materialized entity keys owned by this channel's last checkpoint. */
+  checkpointRows?: string[];
+  /** Projection identity associated with checkpointRows. */
+  checkpointProjectionKey?: string;
+  checkpointProjectionRevision?: string;
+  /** Compact LWW winners survive bounded audit-history eviction. */
+  lwwWinners?: Record<string, LwwWinnerRow>;
+}
+
+export interface LwwWinnerRow {
+  clientTs: string;
+  deviceId: string;
+  mutationId: string;
 }
 
 export interface HistoryRow {
   /** ULID — same as the original mutation id */
   id: string;
+  channel?: string;
   entityType: string;
   entityId: string;
   op: MutationOp;

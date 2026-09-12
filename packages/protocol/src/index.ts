@@ -27,6 +27,7 @@ export type {
   JsonObject,
   CheckpointMaterializedRow,
   CheckpointMergeMetadata,
+  CheckpointLwwMergeMetadataValue,
   CheckpointIntegrity,
   CheckpointEnvelope,
   CheckpointProviderContext,
