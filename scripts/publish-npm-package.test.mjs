@@ -33,7 +33,11 @@ test('packs workspace dependencies with pnpm and publishes the tarball with npm 
     npmCommand: 'npm',
     runPnpmCommand,
     tarballDir,
-    env: { NODE_AUTH_TOKEN: 'stale-token', KEEP_ME: 'yes' },
+    env: {
+      NODE_AUTH_TOKEN: 'stale-token',
+      NPM_CONFIG_USERCONFIG: '/tmp/setup-node.npmrc',
+      KEEP_ME: 'yes',
+    },
   });
 
   assert.deepEqual(calls[0], {
@@ -49,6 +53,7 @@ test('packs workspace dependencies with pnpm and publishes the tarball with npm 
     'public',
   ]);
   assert.equal(calls[1].options.env.NODE_AUTH_TOKEN, undefined);
+  assert.equal(calls[1].options.env.NPM_CONFIG_USERCONFIG, undefined);
   assert.equal(calls[1].options.env.KEEP_ME, 'yes');
 });
 

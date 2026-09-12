@@ -45,6 +45,7 @@ export async function publishPackage(packageDir, options = {}) {
 
   const publishEnv = { ...(options.env ?? process.env) };
   delete publishEnv.NODE_AUTH_TOKEN;
+  delete publishEnv.NPM_CONFIG_USERCONFIG;
   const npmCommand = options.npmCommand ?? (process.platform === 'win32' ? 'npm.cmd' : 'npm');
   const execFile = options.execFile ?? execFileSync;
   execFile(npmCommand, ['publish', tarball, '--access', 'public'], {
