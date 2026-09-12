@@ -1,4 +1,4 @@
-import type { Mutation } from '@maayo/protocol';
+import type { CheckpointProvider as ProtocolCheckpointProvider, Mutation } from '@maayo/protocol';
 
 export interface SavedMutation {
   mutation: Mutation;
@@ -17,9 +17,17 @@ export interface MaayoStore {
     lastMutationId: string,
     limit: number,
   ): Promise<SavedMutation[]>;
+  /** Return false when this compound cursor predates retained replay history. */
+  isCursorRetained?(channel: string, since: Date, lastMutationId: string): Promise<boolean>;
 }
 
 export interface ChannelAuthorizer {
   canPush(request: unknown, channel: string): boolean | Promise<boolean>;
   canPull(request: unknown, channel: string): boolean | Promise<boolean>;
 }
+
+export type CheckpointProvider = ProtocolCheckpointProvider<unknown>;
+export type CheckpointProjectionKeyResolver = (
+  request: unknown,
+  channel: string,
+) => string | Promise<string>;

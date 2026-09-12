@@ -14,7 +14,7 @@ export {
 } from './outbox';
 export type { EnqueueOptions, RejectionOptions, RecordedRejection } from './outbox';
 
-export { pull, SyncHttpError } from './pull';
+export { pull, SyncHttpError, CheckpointRequiredError } from './pull';
 export type { PullOptions, ApplyResult, ApplyOutcome, ApplyMutationHook } from './pull';
 
 export { policyApply, applyPolicyMutation } from './policies';
@@ -24,7 +24,21 @@ export { foldPolicies, checkConvergence, assertConverges, canonicalState } from 
 export type { FoldFn, FoldedState, FoldedEntity, ConvergenceOptions, ConvergenceReport } from './testing';
 
 export { SyncEngine } from './engine';
-export type { SyncConfig, SyncStatus } from './engine';
+export type { SyncConfig, SyncStatus, SyncPhase, SyncTelemetryEvent, CheckpointSyncConfig } from './engine';
+
+export { applyMutationPage } from './bulk';
+export type { MutationPage, ApplyMutationPageOptions } from './bulk';
+
+export {
+  CHECKPOINT_PROTOCOL_VERSION,
+  computeCheckpointChecksum,
+  installCheckpoint,
+} from './checkpoint';
+export type {
+  CheckpointEnvelope,
+  CheckpointRow,
+  CheckpointInstallOptions,
+} from './checkpoint';
 
 export { ulid, deviceId } from './ids';
 

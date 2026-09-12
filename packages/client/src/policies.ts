@@ -426,15 +426,23 @@ export interface PolicyApplyOptions {
   systemAuthorId?: string;
 }
 
+/** Public marker used by the bulk page seam to recover the declarative policy
+ * configuration from a hook created by `policyApply()`. */
+export const POLICY_APPLY_OPTIONS = Symbol('maayo.policyApplyOptions');
+
+export type PolicyApplyHook = ApplyMutationHook & {
+  readonly [POLICY_APPLY_OPTIONS]: Readonly<PolicyApplyOptions>;
+};
+
 /**
  * Build an {@link ApplyMutationHook} that merges every pulled mutation per its
  * entity's declared policy. See the module doc for wiring and semantics.
  */
-export function policyApply(opts: PolicyApplyOptions): ApplyMutationHook {
+export function policyApply(opts: PolicyApplyOptions): PolicyApplyHook {
   const metaTableName = opts.metaTable ?? '_syncmeta';
   const systemAuthor = opts.systemAuthorId ?? SYSTEM_AUTHOR;
 
-  return async (db: MaayoDatabase, mutation: Mutation): Promise<ApplyOutcome> => {
+  const hook: ApplyMutationHook = async (db: MaayoDatabase, mutation: Mutation): Promise<ApplyOutcome> => {
     let table;
     try {
       table = db.table<Record<string, unknown>, string>(mutation.entityType);
@@ -464,4 +472,9 @@ export function policyApply(opts: PolicyApplyOptions): ApplyMutationHook {
     await metaTable.put(decision.meta);
     return decision.action === 'put' ? 'applied' : 'skipped';
   };
+  Object.defineProperty(hook, POLICY_APPLY_OPTIONS, {
+    value: Object.freeze({ ...opts }),
+    enumerable: false,
+  });
+  return hook as PolicyApplyHook;
 }

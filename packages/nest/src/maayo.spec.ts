@@ -30,7 +30,7 @@ function makeStore(overrides: Partial<MaayoStore> = {}): MaayoStore {
 }
 
 function makeOptions(store: MaayoStore, extra: Partial<MaayoModuleOptions> = {}): MaayoModuleOptions {
-  return { store, ...extra };
+  return { store, ...extra } as MaayoModuleOptions;
 }
 
 describe('MutationsController', () => {

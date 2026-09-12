@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Controller,
   ForbiddenException,
   Get,
@@ -8,7 +9,7 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
-import type { ChangesResponse, Cursor } from '@maayo/protocol';
+import { CHECKPOINT_REQUIRED, type ChangesResponse, type Cursor } from '@maayo/protocol';
 import { MAAYO_OPTIONS } from './maayo.constants';
 import type { MaayoModuleOptions } from './maayo.options';
 import type { SavedMutation } from './interfaces';
@@ -43,6 +44,10 @@ export class ChangesController {
       const sinceDate = new Date(since);
       if (Number.isNaN(sinceDate.getTime())) {
         throw new BadRequestException('since must be a valid ISO-8601 timestamp');
+      }
+      if (store.isCursorRetained
+        && !(await store.isCursorRetained(channel, sinceDate, lastMutationId))) {
+        throw new ConflictException({ code: CHECKPOINT_REQUIRED, channel });
       }
       if (!store.findChangesByCursor) {
         throw new NotImplementedException('store does not support compound-cursor pagination');

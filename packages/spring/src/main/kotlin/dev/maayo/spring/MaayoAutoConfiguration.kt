@@ -1,6 +1,7 @@
 package dev.maayo.spring
 
 import dev.maayo.spring.api.ChangesController
+import dev.maayo.spring.api.CheckpointController
 import dev.maayo.spring.api.MutationController
 import dev.maayo.spring.api.SchemaController
 import dev.maayo.spring.jpa.MaayoJpaAutoConfiguration
@@ -11,6 +12,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean
+import org.springframework.beans.factory.ObjectProvider
+import com.fasterxml.jackson.databind.ObjectMapper
 
 @AutoConfiguration
 @AutoConfigureAfter(MaayoJpaAutoConfiguration::class)
@@ -21,6 +24,10 @@ class MaayoAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(ChannelAuthorizer::class)
     fun maayoChannelAuthorizer(): ChannelAuthorizer = PermitAllChannelAuthorizer()
+
+    @Bean
+    @ConditionalOnMissingBean(CheckpointProjectionResolver::class)
+    fun maayoCheckpointProjectionResolver(): CheckpointProjectionResolver = DefaultCheckpointProjectionResolver()
 
     @Bean
     @ConditionalOnBean(MaayoRepository::class)
@@ -35,7 +42,18 @@ class MaayoAutoConfiguration {
         repository: MaayoRepository,
         authorizer: ChannelAuthorizer,
         properties: MaayoProperties,
-    ) = ChangesController(repository, authorizer, properties)
+        checkpointProvider: ObjectProvider<CheckpointProvider>,
+        projectionResolver: CheckpointProjectionResolver,
+    ) = ChangesController(repository, authorizer, properties, checkpointProvider.ifAvailable, projectionResolver)
+
+    @Bean
+    @ConditionalOnBean(CheckpointProvider::class)
+    fun maayoCheckpointController(
+        checkpointProvider: CheckpointProvider,
+        authorizer: ChannelAuthorizer,
+        projectionResolver: CheckpointProjectionResolver,
+        objectMapper: ObjectMapper,
+    ) = CheckpointController(checkpointProvider, authorizer, projectionResolver, objectMapper)
 
     /** GET /sync/schema — declared conflict policies (maayo.policies.*). An
      *  empty map serves an empty list; clients treat that as "everything LWW". */

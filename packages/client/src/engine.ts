@@ -2,9 +2,47 @@ import type { BatchMutationsResponse, Mutation, RejectedMutation } from '@maayo/
 import type { MaayoDatabase, UserTableSchema, MigrationDef, HistoryRow, OutboxRow } from './database';
 import { openDatabase } from './database';
 import { pending, markSynced, purgeSynced, recordRejection } from './outbox';
-import { pull, SyncHttpError, type ApplyMutationHook, type ApplyOutcome } from './pull';
+import {
+  CheckpointRequiredError,
+  pull,
+  SyncHttpError,
+  type ApplyMutationHook,
+  type ApplyOutcome,
+} from './pull';
 import { TabCoordinator } from './leader';
 import { fetchWithTimeout } from './transport';
+import {
+  CHECKPOINT_PROTOCOL_VERSION,
+  installCheckpoint,
+  type CheckpointEnvelope,
+  type CheckpointInstallOptions,
+} from './checkpoint';
+
+export type SyncPhase =
+  | 'auth'
+  | 'push'
+  | 'checkpoint'
+  | 'checkpoint-transfer'
+  | 'checkpoint-transaction'
+  | 'pull'
+  | 'idle';
+
+export interface SyncTelemetryEvent {
+  phase: SyncPhase;
+  channel?: string;
+  status: 'start' | 'end' | 'skip' | 'error';
+  rows?: number;
+  mutations?: number;
+  elapsedMs?: number;
+  terminalState?: SyncStatus;
+}
+
+export interface CheckpointSyncConfig extends Omit<CheckpointInstallOptions, 'expectedChannel' | 'expectedProjectionKey'> {
+  /** Must partition by every auth/projection input that can change visible rows. */
+  projectionKey: string | ((channel: string) => string | Promise<string>);
+  /** Optional ETag reuse hook; return a known checkpoint validator for this channel/projection. */
+  etag?: string | ((channel: string, projectionKey: string) => string | undefined | Promise<string | undefined>);
+}
 
 export interface SyncConfig {
   /** Your backend base URL, no trailing slash */
@@ -53,6 +91,14 @@ export interface SyncConfig {
   applyMutation?: ApplyMutationHook;
   /** Observer fired once per pulled mutation with its merge outcome. */
   onApplied?: (mutation: Mutation, outcome: ApplyOutcome) => void;
+  /**
+   * Optional snapshot clone. When configured, fresh channels try
+   * `/sync/checkpoint` first and stale retained cursors recover by installing a
+   * checkpoint, then tailing `/sync/changes` from its throughCursor.
+   */
+  checkpoint?: CheckpointSyncConfig;
+  /** Phase timing/count events for benchmark and production observability. */
+  onTelemetry?: (event: SyncTelemetryEvent) => void;
   /**
    * Fires when a push or pull fails with 401/403. The engine's fetch bypasses
    * any HTTP-client interceptors the app has, so without this hook an expired
@@ -204,6 +250,8 @@ export class SyncEngine {
       if (rows.length === 0) return;
 
       const headers = await this._headers();
+      const start = performance.now();
+      this._emitTelemetry({ phase: 'push', status: 'start', mutations: rows.length });
       const data = await fetchWithTimeout(`${this.config.baseUrl}/sync/mutations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
@@ -213,6 +261,12 @@ export class SyncEngine {
         if (!resp.ok) throw new SyncHttpError('push', resp.status, resp.statusText);
         return resp.json() as Promise<BatchMutationsResponse>;
       }, this.config.requestTimeoutMs);
+      this._emitTelemetry({
+        phase: 'push',
+        status: 'end',
+        mutations: rows.length,
+        elapsedMs: performance.now() - start,
+      });
       const requestedIds = new Set(rows.map((row) => row.id));
       const acceptedIds = data.accepted.map((accepted) => accepted.id);
       const rejectedItems = data.rejected ?? [];
@@ -270,32 +324,172 @@ export class SyncEngine {
     const headers = await this._headers();
     await Promise.all(
       this.config.channels.map(async (channel) => {
+        await this._installCheckpointIfUseful(channel, headers, signal, 'fresh');
         let hasMore = true;
         while (hasMore) {
-          const result = await pull(this.db, {
-            baseUrl: this.config.baseUrl,
-            channel,
-            headers,
-            requestTimeoutMs: this.config.requestTimeoutMs,
-            signal,
-            softDelete: this.config.softDelete,
-            applyMutation: this.config.applyMutation,
-            onApplied: this.config.onApplied,
-          });
+          const result = await this._pullOnePage(channel, headers, signal);
           hasMore = result.hasMore;
         }
       }),
     );
   }
 
+  private async _pullOnePage(
+    channel: string,
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ): ReturnType<typeof pull> {
+    const start = performance.now();
+    this._emitTelemetry({ phase: 'pull', channel, status: 'start' });
+    try {
+      const result = await pull(this.db, {
+        baseUrl: this.config.baseUrl,
+        channel,
+        headers,
+        requestTimeoutMs: this.config.requestTimeoutMs,
+        signal,
+        softDelete: this.config.softDelete,
+        applyMutation: this.config.applyMutation,
+        onApplied: this.config.onApplied,
+        remoteHistoryLimit: this.config.checkpoint?.remoteHistoryLimit,
+      });
+      this._emitTelemetry({
+        phase: 'pull',
+        channel,
+        status: 'end',
+        mutations: result.result.applied + result.result.skipped,
+        elapsedMs: performance.now() - start,
+      });
+      return result;
+    } catch (error) {
+      if (error instanceof CheckpointRequiredError && this.config.checkpoint) {
+        await this._installCheckpointIfUseful(channel, headers, signal, 'required');
+        return this._pullOnePage(channel, headers, signal);
+      }
+      this._emitTelemetry({
+        phase: 'pull',
+        channel,
+        status: 'error',
+        elapsedMs: performance.now() - start,
+      });
+      throw error;
+    }
+  }
+
+  private async _installCheckpointIfUseful(
+    channel: string,
+    headers: Record<string, string>,
+    signal: AbortSignal,
+    reason: 'fresh' | 'required',
+  ): Promise<void> {
+    const config = this.config.checkpoint;
+    if (!config) return;
+    const existingCursor = await this.db._cursors.get(channel);
+    if (reason === 'fresh' && existingCursor?.lastMutationId) {
+      this._emitTelemetry({ phase: 'checkpoint', channel, status: 'skip' });
+      return;
+    }
+
+    const projectionKey = await this._checkpointProjectionKey(channel, config);
+    const url = new URL(`${this.config.baseUrl}/sync/checkpoint`);
+    url.searchParams.set('channel', channel);
+    const etag = await this._checkpointEtag(channel, projectionKey, config);
+    const start = performance.now();
+    this._emitTelemetry({ phase: 'checkpoint', channel, status: 'start' });
+    const envelope = await fetchWithTimeout(url, {
+      headers: {
+        Accept: 'application/json',
+        'Accept-Encoding': 'br, gzip',
+        ...(etag ? { 'If-None-Match': etag } : {}),
+        ...headers,
+      },
+      signal,
+    }, async (response) => {
+      if (response.status === 304) return null;
+      if (response.status === 404 && reason === 'fresh') return null;
+      if (!response.ok) throw new SyncHttpError('pull', response.status, response.statusText);
+      const transferStart = performance.now();
+      const body = await response.json() as CheckpointEnvelope;
+      this._emitTelemetry({
+        phase: 'checkpoint-transfer',
+        channel,
+        status: 'end',
+        rows: body.rows.length,
+        elapsedMs: performance.now() - transferStart,
+      });
+      return body;
+    }, this.config.requestTimeoutMs);
+    if (!envelope) {
+      this._emitTelemetry({ phase: 'checkpoint', channel, status: 'skip' });
+      return;
+    }
+
+    const transactionStart = performance.now();
+    await installCheckpoint(this.db, envelope, {
+      ...config,
+      expectedChannel: channel,
+      expectedProjectionKey: projectionKey,
+      supportedProtocolVersion: CHECKPOINT_PROTOCOL_VERSION,
+    });
+    this._emitTelemetry({
+      phase: 'checkpoint-transaction',
+      channel,
+      status: 'end',
+      rows: envelope.rows.length,
+      elapsedMs: performance.now() - transactionStart,
+    });
+    this._emitTelemetry({
+      phase: 'checkpoint',
+      channel,
+      status: 'end',
+      rows: envelope.rows.length,
+      elapsedMs: performance.now() - start,
+    });
+  }
+
+  private async _checkpointProjectionKey(channel: string, config: CheckpointSyncConfig): Promise<string> {
+    const value = typeof config.projectionKey === 'function'
+      ? await config.projectionKey(channel)
+      : config.projectionKey;
+    if (!value.trim()) throw new Error(`Checkpoint projection key is blank for channel ${channel}`);
+    return value;
+  }
+
+  private async _checkpointEtag(
+    channel: string,
+    projectionKey: string,
+    config: CheckpointSyncConfig,
+  ): Promise<string | undefined> {
+    if (!config.etag) return undefined;
+    return typeof config.etag === 'function'
+      ? config.etag(channel, projectionKey)
+      : config.etag;
+  }
+
   private async _headers(): Promise<Record<string, string>> {
     if (!this.config.authHeaders) return {};
-    return this.config.authHeaders();
+    const start = performance.now();
+    this._emitTelemetry({ phase: 'auth', status: 'start' });
+    const headers = await this.config.authHeaders();
+    this._emitTelemetry({ phase: 'auth', status: 'end', elapsedMs: performance.now() - start });
+    return headers;
   }
 
   private _setStatus(s: SyncStatus): void {
     this._status = s;
     this._statusListeners.forEach((fn) => fn(s));
     if (this._coordinator.isLeader) this._coordinator.broadcastStatus(s);
+    if (s === 'idle' || s === 'offline' || s === 'error') {
+      this._emitTelemetry({ phase: 'idle', status: 'end', terminalState: s });
+    }
+  }
+
+  private _emitTelemetry(event: SyncTelemetryEvent): void {
+    if (!this.config.onTelemetry) return;
+    try {
+      this.config.onTelemetry(event);
+    } catch (err) {
+      console.error('[maayo] onTelemetry callback failed', err);
+    }
   }
 }

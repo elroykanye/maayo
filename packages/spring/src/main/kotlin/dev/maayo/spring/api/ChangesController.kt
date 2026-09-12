@@ -1,10 +1,16 @@
 package dev.maayo.spring.api
 
 import dev.maayo.spring.ChannelAuthorizer
+import dev.maayo.spring.CheckpointProjectionResolver
+import dev.maayo.spring.CheckpointProvider
+import dev.maayo.spring.CheckpointReplayRequest
 import dev.maayo.spring.MaayoProperties
 import dev.maayo.spring.MaayoRepository
+import dev.maayo.spring.RetainedReplay
 import dev.maayo.spring.SavedMutation
 import org.springframework.http.HttpStatus
+import org.springframework.http.CacheControl
+import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
@@ -19,6 +25,8 @@ class ChangesController(
     private val repository: MaayoRepository,
     private val authorizer: ChannelAuthorizer,
     private val properties: MaayoProperties,
+    private val checkpointProvider: CheckpointProvider? = null,
+    private val projectionResolver: CheckpointProjectionResolver = dev.maayo.spring.DefaultCheckpointProjectionResolver(),
 ) {
     @GetMapping("/changes")
     fun pull(
@@ -27,7 +35,8 @@ class ChangesController(
         @RequestParam(required = false) lastMutationId: String?,
         @RequestParam(required = false) limit: Int?,
         principal: Principal?,
-    ): ChangesResponse {
+        @RequestParam(defaultValue = "default") projection: String = "default",
+    ): Any {
         if (!authorizer.canPull(principal, channel)) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "unauthorized for channel $channel")
         }
@@ -48,7 +57,29 @@ class ChangesController(
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "since must be a valid ISO-8601 timestamp")
             }
         }
-        val rows = repository.findChanges(channel, sinceInstant, lastMutationId, effectiveLimit + 1)
+        val load = { repository.findChanges(channel, sinceInstant, lastMutationId, effectiveLimit + 1) }
+        val rows = if (checkpointProvider == null) {
+            load()
+        } else {
+            val resolved = projectionResolver.resolve(principal, channel, projection)
+            when (val replay = checkpointProvider.readRetainedChanges(
+                CheckpointReplayRequest(
+                    channel = channel,
+                    projection = resolved.projection,
+                    projectionKey = resolved.projectionKey,
+                    projectionRevision = resolved.projectionRevision,
+                    afterCursor = if (hasSince) Cursor(lastMutationId, since) else null,
+                ),
+                load,
+            )) {
+                is RetainedReplay.Available -> replay.mutations
+                is RetainedReplay.CheckpointRequired -> throw CheckpointRequiredException(
+                    channel,
+                    resolved.projection,
+                    replay.retainedLogFloor,
+                )
+            }
+        }
 
         val hasMore = rows.size > effectiveLimit
         val page = if (hasMore) rows.dropLast(1) else rows
@@ -72,4 +103,30 @@ class ChangesController(
     }
 
     private fun SavedMutation.toDto() = mutation
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(CheckpointRequiredException::class)
+    fun checkpointRequired(error: CheckpointRequiredException): ResponseEntity<CheckpointRequiredResponse> =
+        ResponseEntity.status(HttpStatus.CONFLICT)
+            .cacheControl(CacheControl.noStore())
+            .body(
+                CheckpointRequiredResponse(
+                    channel = error.channel,
+                    projection = error.projection,
+                    retainedLogFloor = error.retainedLogFloor,
+                ),
+            )
 }
+
+class CheckpointRequiredException(
+    val channel: String,
+    val projection: String,
+    val retainedLogFloor: Cursor,
+) : RuntimeException("checkpoint required")
+
+data class CheckpointRequiredResponse(
+    val code: String = "CHECKPOINT_REQUIRED",
+    val channel: String,
+    val projection: String,
+    val retainedLogFloor: Cursor,
+    val checkpointPath: String = "/sync/checkpoint",
+)
