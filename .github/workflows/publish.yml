@@ -85,6 +85,8 @@ jobs:
           node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
+      - name: Use current npm trusted-publishing client
+        run: npm install --global npm@latest
       - run: pnpm install
       - run: pnpm build
       - run: pnpm test:pack
