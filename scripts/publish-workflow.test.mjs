@@ -13,6 +13,7 @@ test('supports a deliberate npm-only recovery run', () => {
 
 test('publishes pnpm-packed tarballs through the npm trusted-publishing client', () => {
   assert.match(workflow, /node-version: 24/);
+  assert.match(workflow, /npm install --global npm@latest/);
   assert.doesNotMatch(workflow, /NODE_AUTH_TOKEN/);
 
   for (const packageName of packageNames) {
