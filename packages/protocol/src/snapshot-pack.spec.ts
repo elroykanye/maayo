@@ -54,4 +54,21 @@ describe('snapshot packs', () => {
     await expect(verifySnapshotPack(pack.manifest, pack.chunks, new Date('2026-09-24T00:30:00.000Z')))
       .rejects.toThrow(/digest/i);
   });
+
+  it('rejects duplicate entity ownership across independently valid chunks', async () => {
+    const pack = await buildSnapshotPack(identity, {
+      rows: [
+        { entityType: 'Student', entityId: 's-1', payload: { id: 's-1', version: 1 } },
+        { entityType: 'Student', entityId: 's-1', payload: { id: 's-1', version: 2 } },
+      ],
+      mergeMetadata: [],
+    }, {
+      maxRowsPerChunk: 1,
+      createdAt: '2026-09-24T00:00:00.000Z',
+      expiresAt: '2026-09-24T01:00:00.000Z',
+    });
+
+    await expect(verifySnapshotPack(pack.manifest, pack.chunks, new Date('2026-09-24T00:30:00.000Z')))
+      .rejects.toThrow(/duplicate.*Student.*s-1/i);
+  });
 });

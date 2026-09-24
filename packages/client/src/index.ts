@@ -63,4 +63,6 @@ export type {
   SnapshotPackInstallOptions,
   SnapshotChunkFetcher,
   SnapshotPackHttpOptions,
+  SnapshotPackInstallPhase,
+  SnapshotPackInstallPhaseEvent,
 } from './snapshot-pack';

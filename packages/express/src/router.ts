@@ -204,7 +204,7 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
       }
       res.set('Cache-Control', 'private, max-age=31536000, immutable');
       res.set('X-Content-Type-Options', 'nosniff');
-      res.json(chunk);
+      await sendCompressedJson(req.header('Accept-Encoding'), chunk, res);
     });
   }
 
@@ -258,13 +258,22 @@ async function sendCheckpoint(
     return;
   }
 
-  const body = Buffer.from(JSON.stringify(checkpoint));
+  await sendCompressedJson(acceptEncoding, checkpoint, res);
+}
+
+async function sendCompressedJson(
+  acceptEncoding: string | undefined,
+  value: unknown,
+  res: import('express').Response,
+): Promise<void> {
+  const body = Buffer.from(JSON.stringify(value));
   const encoding = chooseEncoding(acceptEncoding);
   const encoded = encoding === 'br'
     ? await brotliCompressAsync(body)
     : encoding === 'gzip'
       ? await gzipAsync(body)
       : body;
+  res.vary('Accept-Encoding');
   res.status(200).type('application/json');
   if (encoding !== 'identity') res.set('Content-Encoding', encoding);
   res.send(encoded);

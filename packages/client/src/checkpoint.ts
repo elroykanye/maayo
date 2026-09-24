@@ -30,6 +30,26 @@ export interface CheckpointInstallOptions {
   remoteHistoryLimit?: number;
 }
 
+export interface VerifiedCheckpointHeader {
+  protocolVersion: typeof CHECKPOINT_PROTOCOL_VERSION;
+  schemaVersion: string;
+  channel: string;
+  projectionKey: string;
+  projectionRevision: string;
+  throughCursor: Cursor;
+}
+
+export interface VerifiedCheckpointChunk {
+  rows: readonly CheckpointRow[];
+  mergeMetadata: readonly CheckpointMergeMetadata[];
+}
+
+export type VerifiedCheckpointInstallPhase = 'plan' | 'delete' | 'write' | 'metadata' | 'history' | 'cursor' | 'commit';
+export interface VerifiedCheckpointInstallMetric {
+  phase: VerifiedCheckpointInstallPhase;
+  durationMs: number;
+}
+
 /** Stable checksum input shared by checkpoint producers and clients. */
 export async function computeCheckpointChecksum(value: Omit<CheckpointEnvelope, 'integrity'> | CheckpointEnvelope): Promise<string> {
   const unsigned = 'integrity' in value
@@ -52,19 +72,57 @@ export async function installCheckpoint(
 ): Promise<void> {
   await validateCheckpoint(envelope, options);
 
+  await installCheckpointChunksCore(db, envelope, [{
+    rows: envelope.rows,
+    mergeMetadata: envelope.mergeMetadata,
+  }], options, envelope.remoteHistory);
+}
+
+/**
+ * Activate chunks whose manifest and content digests were already verified by
+ * the snapshot-pack protocol. This avoids rebuilding and hashing a second
+ * monolithic checkpoint while retaining one IndexedDB transaction for the
+ * complete generation swap.
+ */
+export async function installVerifiedCheckpointChunks(
+  db: MaayoDatabase,
+  header: VerifiedCheckpointHeader,
+  chunks: readonly VerifiedCheckpointChunk[],
+  options: CheckpointInstallOptions,
+): Promise<VerifiedCheckpointInstallMetric[]> {
+  validateCheckpointHeader(header, options);
+  return installCheckpointChunksCore(db, header, chunks, options);
+}
+
+async function installCheckpointChunksCore(
+  db: MaayoDatabase,
+  header: VerifiedCheckpointHeader,
+  chunks: readonly VerifiedCheckpointChunk[],
+  options: CheckpointInstallOptions,
+  remoteHistory?: readonly Mutation[],
+): Promise<VerifiedCheckpointInstallMetric[]> {
+  const metrics: VerifiedCheckpointInstallMetric[] = [];
+  let phaseStarted = nowMs();
+
   const replaceEntityTypes = new Set(options.replaceEntityTypes);
-  const unsupportedRow = envelope.rows.find((row) => !replaceEntityTypes.has(row.entityType));
-  if (unsupportedRow) {
-    throw new Error(`Checkpoint entity type is not configured for replacement: ${unsupportedRow.entityType}`);
+  const incomingOwnedRows: string[] = [];
+  const incomingEntityTypes = new Set<string>();
+  for (const chunk of chunks) {
+    for (const row of chunk.rows) {
+      if (!replaceEntityTypes.has(row.entityType)) {
+        throw new Error(`Checkpoint entity type is not configured for replacement: ${row.entityType}`);
+      }
+      incomingEntityTypes.add(row.entityType);
+      incomingOwnedRows.push(checkpointEntityKey(row.entityType, row.entityId));
+    }
   }
-  const incomingOwnedRows = envelope.rows.map((row) => checkpointEntityKey(row.entityType, row.entityId));
 
   const tables = new Map<string, Table<Record<string, unknown>, string>>();
-  for (const entityType of new Set([...options.replaceEntityTypes, ...envelope.rows.map((row) => row.entityType)])) {
+  for (const entityType of new Set([...options.replaceEntityTypes, ...incomingEntityTypes])) {
     try {
       tables.set(entityType, db.table(entityType));
     } catch {
-      if (envelope.rows.some((row) => row.entityType === entityType)) {
+      if (incomingEntityTypes.has(entityType)) {
         throw new Error(`Checkpoint references unknown entity type: ${entityType}`);
       }
     }
@@ -74,21 +132,23 @@ export async function installCheckpoint(
     : undefined;
   const transactionTables: Table[] = [db._cursors, db._history, ...tables.values()];
   if (metaTable) transactionTables.push(metaTable);
+  metrics.push({ phase: 'plan', durationMs: nowMs() - phaseStarted });
 
+  const commitStarted = nowMs();
   await db.transaction('rw', transactionTables, async () => {
-    const currentCursor = await db._cursors.get(envelope.channel);
-    const otherCursors = (await db._cursors.toArray()).filter((cursor) => cursor.channel !== envelope.channel);
+    const currentCursor = await db._cursors.get(header.channel);
+    const otherCursors = (await db._cursors.toArray()).filter((cursor) => cursor.channel !== header.channel);
     await assertTrackedChannelIsolation(
-      currentCursor, otherCursors, incomingOwnedRows, replaceEntityTypes, tables, envelope,
+      currentCursor, otherCursors, replaceEntityTypes, tables, chunks,
     );
     const clearWholeTables = !currentCursor?.checkpointRows && !otherCursors.some(hasMaterializedState);
     const previousOwnedRows = currentCursor?.checkpointRows ?? [];
 
+    phaseStarted = nowMs();
     if (clearWholeTables) {
       for (const [entityType, table] of tables) {
         if (!replaceEntityTypes.has(entityType)) continue;
-        const existingKeys = await table.toCollection().primaryKeys() as string[];
-        if (existingKeys.length > 0) await table.bulkDelete(existingKeys);
+        await table.clear();
       }
     } else {
       await deleteOwnedRows(
@@ -98,14 +158,24 @@ export async function installCheckpoint(
         new Set(otherCursors.flatMap((cursor) => cursor.checkpointRows ?? [])),
       );
     }
+    metrics.push({ phase: 'delete', durationMs: nowMs() - phaseStarted });
 
-    for (const [entityType, table] of tables) {
-      const rows = envelope.rows
-        .filter((row) => row.entityType === entityType)
-        .map((row) => normalizeRow(row));
-      if (rows.length > 0) await table.bulkPut(rows);
+    phaseStarted = nowMs();
+    for (const chunk of chunks) {
+      const rowsByType = new Map<string, Record<string, unknown>[]>();
+      for (const row of chunk.rows) {
+        const rows = rowsByType.get(row.entityType) ?? [];
+        rows.push(normalizeRow(row));
+        rowsByType.set(row.entityType, rows);
+      }
+      for (const [entityType, rows] of rowsByType) {
+        const table = tables.get(entityType);
+        if (table && rows.length > 0) await table.bulkPut(rows);
+      }
     }
+    metrics.push({ phase: 'write', durationMs: nowMs() - phaseStarted });
 
+    phaseStarted = nowMs();
     if (metaTable) {
       const otherOwnedRows = new Set(otherCursors.flatMap((cursor) => cursor.checkpointRows ?? []));
       const existingMetaKeys = clearWholeTables
@@ -116,27 +186,40 @@ export async function installCheckpoint(
             .filter(([entityType]) => replaceEntityTypes.has(entityType))
             .map(([entityType, entityId]) => `${entityType}:${entityId}`);
       if (existingMetaKeys.length > 0) await metaTable.bulkDelete(existingMetaKeys);
-      const metadata = normalizeMetadata(envelope);
-      if (metadata.length > 0) await metaTable.bulkPut(metadata);
+      for (const chunk of chunks) {
+        const metadata = chunk.mergeMetadata.map(normalizeMergeMetadata);
+        if (metadata.length > 0) await metaTable.bulkPut(metadata);
+      }
     }
+    metrics.push({ phase: 'metadata', durationMs: nowMs() - phaseStarted });
 
-    await replaceRemoteHistory(db, envelope, options.remoteHistoryLimit);
+    phaseStarted = nowMs();
+    await replaceRemoteHistory(db, header.channel, remoteHistory, options.remoteHistoryLimit);
+    metrics.push({ phase: 'history', durationMs: nowMs() - phaseStarted });
+    phaseStarted = nowMs();
     const lwwWinners = metaTable
       ? undefined
-      : nextLwwWinners(currentCursor, previousOwnedRows, replaceEntityTypes, envelope);
+      : nextLwwWinners(currentCursor, previousOwnedRows, replaceEntityTypes, chunks);
     const retainedOwnedRows = previousOwnedRows.filter((key) => {
       const [entityType] = parseCheckpointEntityKey(key);
       return !replaceEntityTypes.has(entityType);
     });
     await db._cursors.put({
-      channel: envelope.channel,
-      ...envelope.throughCursor,
+      channel: header.channel,
+      ...header.throughCursor,
       checkpointRows: [...retainedOwnedRows, ...incomingOwnedRows],
-      checkpointProjectionKey: envelope.projectionKey,
-      checkpointProjectionRevision: envelope.projectionRevision,
+      checkpointProjectionKey: header.projectionKey,
+      checkpointProjectionRevision: header.projectionRevision,
       lwwWinners,
     });
+    metrics.push({ phase: 'cursor', durationMs: nowMs() - phaseStarted });
   });
+  metrics.push({ phase: 'commit', durationMs: nowMs() - commitStarted });
+  return metrics;
+}
+
+function nowMs(): number {
+  return globalThis.performance?.now() ?? Date.now();
 }
 
 /** Remove one checkpoint-backed working set without touching shared rows or local outbox state. */
@@ -183,16 +266,7 @@ async function validateCheckpoint(
   options: CheckpointInstallOptions,
 ): Promise<void> {
   if (!isValidCheckpointEnvelope(envelope)) throw new Error('Invalid checkpoint envelope');
-  if (envelope.channel !== options.expectedChannel) throw new Error('Checkpoint channel mismatch');
-  if (envelope.projectionKey !== options.expectedProjectionKey) throw new Error('Checkpoint projection key mismatch');
-  if (options.expectedProjectionRevision !== undefined
-    && envelope.projectionRevision !== options.expectedProjectionRevision) {
-    throw new Error('Checkpoint projection revision mismatch');
-  }
-  if (envelope.protocolVersion !== (options.supportedProtocolVersion ?? CHECKPOINT_PROTOCOL_VERSION)) {
-    throw new Error('Unsupported checkpoint protocol version');
-  }
-  if (envelope.schemaVersion !== options.supportedSchemaVersion) throw new Error('Unsupported checkpoint schema version');
+  validateCheckpointHeader(envelope, options);
   if (envelope.integrity.algorithm !== 'sha-256') throw new Error('Unsupported checkpoint checksum algorithm');
   const actual = await computeCheckpointChecksum(envelope);
   if (!constantTimeEqual(actual, envelope.integrity.checksum.toLowerCase())) {
@@ -200,16 +274,25 @@ async function validateCheckpoint(
   }
 }
 
-function normalizeRow(row: CheckpointRow): Record<string, unknown> {
-  return { ...row.payload, id: row.entityId };
+function validateCheckpointHeader(
+  header: VerifiedCheckpointHeader,
+  options: CheckpointInstallOptions,
+): void {
+  if (header.channel !== options.expectedChannel) throw new Error('Checkpoint channel mismatch');
+  if (header.projectionKey !== options.expectedProjectionKey) throw new Error('Checkpoint projection key mismatch');
+  if (options.expectedProjectionRevision !== undefined
+    && header.projectionRevision !== options.expectedProjectionRevision) {
+    throw new Error('Checkpoint projection revision mismatch');
+  }
+  if (header.protocolVersion !== (options.supportedProtocolVersion ?? CHECKPOINT_PROTOCOL_VERSION)) {
+    throw new Error('Unsupported checkpoint protocol version');
+  }
+  if (header.schemaVersion !== options.supportedSchemaVersion) throw new Error('Unsupported checkpoint schema version');
+  if (!isCursor(header.throughCursor)) throw new Error('Invalid checkpoint cursor');
 }
 
-function normalizeMetadata(envelope: CheckpointEnvelope): Record<string, unknown>[] {
-  const result: Record<string, unknown>[] = [];
-  for (const item of envelope.mergeMetadata) {
-    result.push(normalizeMergeMetadata(item));
-  }
-  return result;
+function normalizeRow(row: CheckpointRow): Record<string, unknown> {
+  return { ...row.payload, id: row.entityId };
 }
 
 function normalizeMergeMetadata(item: CheckpointMergeMetadata): Record<string, unknown> {
@@ -239,10 +322,9 @@ function hasMaterializedState(cursor: CursorRow): boolean {
 async function assertTrackedChannelIsolation(
   currentCursor: CursorRow | undefined,
   otherCursors: CursorRow[],
-  incomingOwnedRows: string[],
   replaceEntityTypes: Set<string>,
   tables: Map<string, Table<Record<string, unknown>, string>>,
-  envelope: CheckpointEnvelope,
+  chunks: readonly VerifiedCheckpointChunk[],
 ): Promise<void> {
   const untracked = otherCursors.find((cursor) =>
     hasMaterializedState(cursor) && cursor.checkpointRows === undefined);
@@ -263,14 +345,15 @@ async function assertTrackedChannelIsolation(
       if (replaceEntityTypes.has(entityType)) otherOwners.set(key, cursor.channel);
     }
   }
-  for (const key of incomingOwnedRows) {
-    const owner = otherOwners.get(key);
-    if (owner) {
-      const [entityType, entityId] = parseCheckpointEntityKey(key);
-      const incoming = envelope.rows.find((row) => row.entityType === entityType && row.entityId === entityId);
-      const existing = await tables.get(entityType)?.get(entityId);
-      if (!incoming || canonicalJson(existing) !== canonicalJson(normalizeRow(incoming))) {
-        throw new Error(`Checkpoint row ${entityType}/${entityId} conflicts with channel ${owner}`);
+  for (const chunk of chunks) {
+    for (const incoming of chunk.rows) {
+      const key = checkpointEntityKey(incoming.entityType, incoming.entityId);
+      const owner = otherOwners.get(key);
+      if (owner) {
+        const existing = await tables.get(incoming.entityType)?.get(incoming.entityId);
+        if (canonicalJson(existing) !== canonicalJson(normalizeRow(incoming))) {
+          throw new Error(`Checkpoint row ${incoming.entityType}/${incoming.entityId} conflicts with channel ${owner}`);
+        }
       }
     }
   }
@@ -301,44 +384,47 @@ function nextLwwWinners(
   currentCursor: CursorRow | undefined,
   previousOwnedRows: string[],
   replaceEntityTypes: Set<string>,
-  envelope: CheckpointEnvelope,
+  chunks: readonly VerifiedCheckpointChunk[],
 ): Record<string, LwwWinnerRow> {
   const winners = { ...(currentCursor?.lwwWinners ?? {}) };
   for (const key of previousOwnedRows) {
     const [entityType, entityId] = parseCheckpointEntityKey(key);
     if (replaceEntityTypes.has(entityType)) delete winners[`${entityType}\u0000${entityId}`];
   }
-  for (const metadata of envelope.mergeMetadata) {
-    const value = metadata.value;
-    if (value['policy'] !== 'LWW'
-      || typeof value['clientTs'] !== 'string'
-      || typeof value['deviceId'] !== 'string'
-      || typeof value['mutationId'] !== 'string') continue;
-    winners[`${metadata.entityType}\u0000${metadata.entityId}`] = {
-      clientTs: value['clientTs'],
-      deviceId: value['deviceId'],
-      mutationId: value['mutationId'],
-    };
+  for (const chunk of chunks) {
+    for (const metadata of chunk.mergeMetadata) {
+      const value = metadata.value;
+      if (value['policy'] !== 'LWW'
+        || typeof value['clientTs'] !== 'string'
+        || typeof value['deviceId'] !== 'string'
+        || typeof value['mutationId'] !== 'string') continue;
+      winners[`${metadata.entityType}\u0000${metadata.entityId}`] = {
+        clientTs: value['clientTs'],
+        deviceId: value['deviceId'],
+        mutationId: value['mutationId'],
+      };
+    }
   }
   return winners;
 }
 
 async function replaceRemoteHistory(
   db: MaayoDatabase,
-  envelope: CheckpointEnvelope,
+  channel: string,
+  remoteHistory: readonly Mutation[] | undefined,
   requestedLimit: number | undefined,
 ): Promise<void> {
   const all = await db._history.toArray();
   const remoteIds = all
-    .filter((row) => row.source === 'remote' && row.channel === envelope.channel)
+    .filter((row) => row.source === 'remote' && row.channel === channel)
     .map((row) => row.id);
   if (remoteIds.length > 0) await db._history.bulkDelete(remoteIds);
   const limit = requestedLimit === Infinity
     ? Infinity
     : Math.max(0, Math.floor(requestedLimit ?? 500));
   const mutations = limit === Infinity
-    ? (envelope.remoteHistory ?? [])
-    : (envelope.remoteHistory ?? []).slice(-limit);
+    ? (remoteHistory ?? [])
+    : (remoteHistory ?? []).slice(-limit);
   const receivedAt = new Date().toISOString();
   const rows: HistoryRow[] = mutations.map((mutation) => ({ ...mutation, receivedAt, source: 'remote' }));
   if (rows.length > 0) await db._history.bulkPut(rows);

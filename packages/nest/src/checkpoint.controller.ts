@@ -119,13 +119,9 @@ export class CheckpointController {
     if (!provider) throw new NotFoundException('snapshot pack capability is not configured');
     const chunk = await provider.getSnapshotPackChunk({ request, ...identity, deliveryToken: token }, digest);
     if (!chunk || chunk.digest !== digest) throw new NotFoundException('snapshot chunk not found');
-    const body = Buffer.from(JSON.stringify(chunk));
-    response.status(200);
-    response.setHeader('Content-Type', 'application/json; charset=utf-8');
-    response.setHeader('Content-Length', String(body.byteLength));
     response.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     response.setHeader('X-Content-Type-Options', 'nosniff');
-    response.end(body);
+    await sendCompressedJson(requestHeader(request, 'accept-encoding'), chunk, response);
   }
 
   private async snapshotIdentity(
@@ -163,13 +159,22 @@ async function sendCheckpoint(
     return;
   }
 
-  const body = Buffer.from(JSON.stringify(checkpoint));
+  await sendCompressedJson(acceptEncoding, checkpoint, response);
+}
+
+async function sendCompressedJson(
+  acceptEncoding: string | undefined,
+  value: unknown,
+  response: RawHttpResponse,
+): Promise<void> {
+  const body = Buffer.from(JSON.stringify(value));
   const encoding = chooseEncoding(acceptEncoding);
   const encoded = encoding === 'br'
     ? await brotliCompressAsync(body)
     : encoding === 'gzip'
       ? await gzipAsync(body)
       : body;
+  response.setHeader('Vary', 'Accept-Encoding, Authorization, Cookie');
   response.status(200);
   response.setHeader('Content-Type', 'application/json; charset=utf-8');
   response.setHeader('Content-Length', String(encoded.byteLength));

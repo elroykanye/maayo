@@ -29,6 +29,28 @@ The cache key includes tenant, channel, projection key/revision, schema version,
 
 Clients call `installSnapshotPackFromHttp()` for the standard HTTP path or `installSnapshotPack()` for a custom transport. Missing chunks are fetched concurrently through a pluggable resumable cache, every digest is verified, and only then is the complete generation installed in the existing IndexedDB transaction. `_outbox` is never part of that transaction; failure leaves the prior replica and cursor intact.
 
+Activation keeps the generation atomic while making its internal work bounded: chunks are verified once, entity writes use chunk-sized `bulkPut` calls, and the cursor is committed last in the same transaction. The installer does not flatten the pack or construct and hash a second monolithic checkpoint. `onPhase` reports post-commit timings for acquisition, verification, planning, deletion, writes, metadata, history, cursor, and commit; observer errors cannot change committed state.
+
+## Compression and chunk sizing
+
+Express and Nest snapshot-chunk endpoints negotiate `br` or `gzip` from `Accept-Encoding`. Compression is applied independently to each immutable chunk, so content addressing, resumability, parallel fetch, integrity verification, and cache reuse remain intact. Browsers transparently decode HTTP content encoding before `response.json()`.
+
+For Spring or a reverse proxy, enable HTTP compression for `application/json`; prefer Brotli or Zstandard where the deployed stack supports them and retain gzip as the compatibility fallback. Do not base64-wrap compressed chunks inside JSON: it adds expansion and duplicates functionality already provided by HTTP.
+
+The benchmark measures independently compressed wire objects with gzip level 6, Brotli quality 5, and Zstandard level 3. `MAAYO_SNAPSHOT_CHUNK_ROWS` controls the row boundary. Smaller chunks reduce individual write and retry units but increase requests, manifest size, and compression overhead.
+
+The design follows these primary sources:
+
+- IndexedDB transactions are atomic but expected to be short-lived: <https://www.w3.org/TR/IndexedDB/>
+- Zstandard frames are independently decompressible and support bounded streaming memory: <https://www.rfc-editor.org/rfc/rfc8878.html>
+- Web streams provide incremental processing and backpressure: <https://streams.spec.whatwg.org/>
+- Browser compression streams standardize Brotli, gzip, and deflate-family codecs: <https://compression.spec.whatwg.org/>
+- Dexie recommends chunked `bulkPut` inside a transaction for scalable atomic imports: <https://dexie.org/docs/ExportImport/dexie-export-import>
+- FastCDC improves cross-generation deduplication when insertions would shift fixed chunk boundaries: <https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf>
+- SQLite/OPFS provides a transactional alternative for an optional large-dataset backend: <https://sqlite.org/wasm/doc/tip/persistence.md>
+
+FastCDC and SQLite/OPFS are not silently enabled by this release. FastCDC needs a versioned chunking contract, and SQLite/OPFS needs an explicit backend selection and migration path. Both remain compatible with the existing `SnapshotPackStore` and client cache abstractions.
+
 ## Server setup
 
 - Express: configure `snapshotPackProvider`, `snapshotPackTenant`, and `snapshotPackProjectionKey` on `maayoRouter()`.
@@ -55,4 +77,4 @@ Endpoints are `GET /sync/snapshot-packs/manifest?channel=...` and `GET /sync/sna
 - Preserve the previous generation on missing, expired, corrupt, aborted, or unauthorized transfers.
 - Keep outbound mutations in `_outbox`; generation activation and eviction do not include that table.
 
-Run `pnpm benchmark:snapshot-packs`. Set `MAAYO_SNAPSHOT_SIZES=2500,25000,250000,1000000` and `MAAYO_SNAPSHOT_SAMPLES=5` for the release evidence matrix. The report includes every sample, p50/p95/p99, payload size, runtime/storage/network descriptors, and correctness/integrity/outbox checks.
+Run `pnpm benchmark:snapshot-packs`. Set `MAAYO_SNAPSHOT_SIZES`, `MAAYO_SNAPSHOT_SAMPLES`, and `MAAYO_SNAPSHOT_CHUNK_ROWS` for bounded evidence runs. The report includes every sample, p50/p95/p99, per-phase timings, raw and compressed payload sizes, runtime/storage/network descriptors, and correctness/integrity/outbox checks. Run large tiers separately so each completed result is preserved.

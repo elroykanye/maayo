@@ -6,9 +6,8 @@ import {
 } from '@maayo/protocol';
 import type { MaayoDatabase } from './database';
 import {
-  computeCheckpointChecksum,
-  installCheckpoint,
-  type CheckpointEnvelope,
+  CHECKPOINT_PROTOCOL_VERSION,
+  installVerifiedCheckpointChunks,
   type CheckpointInstallOptions,
 } from './checkpoint';
 
@@ -27,6 +26,17 @@ export interface SnapshotPackInstallOptions extends CheckpointInstallOptions {
   concurrency?: number;
   cache?: SnapshotChunkCache;
   now?: Date;
+  /** Post-commit timing observer. Observer failures never affect activation. */
+  onPhase?: (event: SnapshotPackInstallPhaseEvent) => void;
+}
+
+export type SnapshotPackInstallPhase =
+  | 'acquire' | 'verify' | 'plan' | 'delete' | 'write' | 'metadata' | 'history' | 'cursor' | 'commit';
+export interface SnapshotPackInstallPhaseEvent {
+  phase: SnapshotPackInstallPhase;
+  durationMs: number;
+  chunks: number;
+  rows: number;
 }
 
 export type SnapshotChunkFetcher = (
@@ -76,6 +86,8 @@ export async function installSnapshotPack(
   signal?: AbortSignal,
 ): Promise<void> {
   assertExpectedIdentity(manifest, options);
+  const events: SnapshotPackInstallPhaseEvent[] = [];
+  let started = nowMs();
   const chunks = await acquireChunks(
     manifest.chunks,
     fetchChunk,
@@ -83,28 +95,45 @@ export async function installSnapshotPack(
     normalizeConcurrency(options.concurrency),
     signal,
   );
+  events.push(phaseEvent('acquire', nowMs() - started, chunks));
   signal?.throwIfAborted();
+  started = nowMs();
   await verifySnapshotPack(manifest, chunks, options.now);
-  const unsigned: Omit<CheckpointEnvelope, 'integrity'> = {
-    protocolVersion: 1,
+  events.push(phaseEvent('verify', nowMs() - started, chunks));
+  signal?.throwIfAborted();
+  const activationMetrics = await installVerifiedCheckpointChunks(db, {
+    protocolVersion: CHECKPOINT_PROTOCOL_VERSION,
     schemaVersion: manifest.identity.schemaVersion,
     channel: manifest.identity.channel,
     projectionKey: manifest.identity.projectionKey,
     projectionRevision: manifest.identity.projectionRevision,
     throughCursor: manifest.identity.throughCursor,
-    rows: chunks.flatMap((chunk) => chunk.rows),
-    mergeMetadata: chunks.flatMap((chunk) => chunk.mergeMetadata),
+  }, chunks, options);
+  for (const metric of activationMetrics) {
+    events.push(phaseEvent(metric.phase, metric.durationMs, chunks));
+  }
+  if (options.onPhase) {
+    for (const event of events) {
+      try { options.onPhase(event); } catch { /* telemetry cannot change committed state */ }
+    }
+  }
+}
+
+function phaseEvent(
+  phase: SnapshotPackInstallPhase,
+  durationMs: number,
+  chunks: readonly SnapshotPackChunk[],
+): SnapshotPackInstallPhaseEvent {
+  return {
+    phase,
+    durationMs,
+    chunks: chunks.length,
+    rows: chunks.reduce((total, chunk) => total + chunk.rows.length, 0),
   };
-  const envelope: CheckpointEnvelope = {
-    ...unsigned,
-    integrity: {
-      algorithm: 'sha-256',
-      checksum: await computeCheckpointChecksum(unsigned),
-      scope: 'rows-and-merge-metadata',
-    },
-  };
-  signal?.throwIfAborted();
-  await installCheckpoint(db, envelope, options);
+}
+
+function nowMs(): number {
+  return globalThis.performance?.now() ?? Date.now();
 }
 
 async function acquireChunks(

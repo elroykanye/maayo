@@ -215,18 +215,37 @@ export async function verifySnapshotPack(
   if (!constantTimeEqual(manifestDigest, manifest.integrity.manifestDigest)
     || manifest.generation !== manifestDigest) throw new Error('Snapshot pack manifest digest mismatch');
   if (chunks.length !== manifest.chunks.length) throw new Error('Snapshot pack is incomplete');
+  const rowKeys = new Set<string>();
+  const metadataKeys = new Set<string>();
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index];
     const reference = manifest.chunks[index];
-    const digest = await sha256Hex(canonicalJson({ rows: chunk.rows, mergeMetadata: chunk.mergeMetadata }));
+    const encoded = encodedChunk(chunk);
+    const digest = await sha256HexBytes(encoded);
     if (chunk.digest !== reference.digest || !constantTimeEqual(digest, reference.digest)) {
       throw new Error(`Snapshot chunk digest mismatch at index ${index}`);
     }
-    if (encodedChunk(chunk).byteLength !== reference.byteLength
+    if (encoded.byteLength !== reference.byteLength
       || chunk.rows.length !== reference.rowCount
       || chunk.mergeMetadata.length !== reference.metadataCount) {
       throw new Error(`Snapshot chunk metadata mismatch at index ${index}`);
     }
+    assertUniqueChunkEntities(chunk.rows, rowKeys, 'row');
+    assertUniqueChunkEntities(chunk.mergeMetadata, metadataKeys, 'merge metadata');
+  }
+}
+
+function assertUniqueChunkEntities(
+  values: readonly { entityType: string; entityId: string }[],
+  seen: Set<string>,
+  kind: string,
+): void {
+  for (const value of values) {
+    const key = entityKey(value);
+    if (seen.has(key)) {
+      throw new Error(`Duplicate snapshot ${kind}: ${value.entityType}/${value.entityId}`);
+    }
+    seen.add(key);
   }
 }
 
@@ -268,7 +287,11 @@ function encodedChunk(chunk: SnapshotPackChunk): Uint8Array {
 }
 
 async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return sha256HexBytes(new TextEncoder().encode(value));
+}
+
+async function sha256HexBytes(value: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', value);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
