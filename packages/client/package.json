@@ -1,6 +1,6 @@
 {
   "name": "@maayo/client",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "description": "Offline-first sync client \u2014 Dexie outbox, push/pull engine, LWW conflict resolution",
   "keywords": [

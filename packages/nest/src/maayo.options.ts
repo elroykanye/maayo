@@ -4,6 +4,7 @@ import type {
   ChannelAuthorizer,
   CheckpointProvider,
   CheckpointProjectionKeyResolver,
+  SnapshotPackProvider,
 } from './interfaces';
 
 interface MaayoModuleBaseOptions {
@@ -12,6 +13,9 @@ interface MaayoModuleBaseOptions {
   authorizer?: ChannelAuthorizer;
   /** Max mutations per GET /sync/changes page. Default 500. */
   defaultLimit?: number;
+  snapshotPackProvider?: SnapshotPackProvider;
+  snapshotPackTenant?: (request: unknown, channel: string) => string | Promise<string>;
+  snapshotPackProjectionKey?: CheckpointProjectionKeyResolver;
 }
 
 export type MaayoModuleOptions = MaayoModuleBaseOptions & (

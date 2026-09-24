@@ -78,7 +78,9 @@ export async function installCheckpoint(
   await db.transaction('rw', transactionTables, async () => {
     const currentCursor = await db._cursors.get(envelope.channel);
     const otherCursors = (await db._cursors.toArray()).filter((cursor) => cursor.channel !== envelope.channel);
-    assertTrackedChannelIsolation(currentCursor, otherCursors, incomingOwnedRows, replaceEntityTypes);
+    await assertTrackedChannelIsolation(
+      currentCursor, otherCursors, incomingOwnedRows, replaceEntityTypes, tables, envelope,
+    );
     const clearWholeTables = !currentCursor?.checkpointRows && !otherCursors.some(hasMaterializedState);
     const previousOwnedRows = currentCursor?.checkpointRows ?? [];
 
@@ -89,7 +91,12 @@ export async function installCheckpoint(
         if (existingKeys.length > 0) await table.bulkDelete(existingKeys);
       }
     } else {
-      await deleteOwnedRows(tables, previousOwnedRows, replaceEntityTypes);
+      await deleteOwnedRows(
+        tables,
+        previousOwnedRows,
+        replaceEntityTypes,
+        new Set(otherCursors.flatMap((cursor) => cursor.checkpointRows ?? [])),
+      );
     }
 
     for (const [entityType, table] of tables) {
@@ -100,9 +107,11 @@ export async function installCheckpoint(
     }
 
     if (metaTable) {
+      const otherOwnedRows = new Set(otherCursors.flatMap((cursor) => cursor.checkpointRows ?? []));
       const existingMetaKeys = clearWholeTables
         ? await metaTable.toCollection().primaryKeys() as string[]
         : previousOwnedRows
+            .filter((key) => !otherOwnedRows.has(key))
             .map(parseCheckpointEntityKey)
             .filter(([entityType]) => replaceEntityTypes.has(entityType))
             .map(([entityType, entityId]) => `${entityType}:${entityId}`);
@@ -112,7 +121,9 @@ export async function installCheckpoint(
     }
 
     await replaceRemoteHistory(db, envelope, options.remoteHistoryLimit);
-    const lwwWinners = nextLwwWinners(currentCursor, previousOwnedRows, replaceEntityTypes, envelope);
+    const lwwWinners = metaTable
+      ? undefined
+      : nextLwwWinners(currentCursor, previousOwnedRows, replaceEntityTypes, envelope);
     const retainedOwnedRows = previousOwnedRows.filter((key) => {
       const [entityType] = parseCheckpointEntityKey(key);
       return !replaceEntityTypes.has(entityType);
@@ -125,6 +136,45 @@ export async function installCheckpoint(
       checkpointProjectionRevision: envelope.projectionRevision,
       lwwWinners,
     });
+  });
+}
+
+/** Remove one checkpoint-backed working set without touching shared rows or local outbox state. */
+export async function evictCheckpointChannel(
+  db: MaayoDatabase,
+  channel: string,
+  replaceEntityTypes: readonly string[],
+  metaTableName?: string,
+): Promise<void> {
+  const cursor = await db._cursors.get(channel);
+  if (!cursor) return;
+  if (cursor.checkpointRows === undefined) {
+    throw new Error(`Cannot safely evict untracked channel ${channel}`);
+  }
+  const tables = new Map<string, Table<Record<string, unknown>, string>>();
+  for (const entityType of replaceEntityTypes) tables.set(entityType, db.table(entityType));
+  const metaTable = metaTableName
+    ? db.table<Record<string, unknown>, string>(metaTableName)
+    : undefined;
+  const transactionTables: Table[] = [db._cursors, db._history, ...tables.values()];
+  if (metaTable) transactionTables.push(metaTable);
+  await db.transaction('rw', transactionTables, async () => {
+    const otherCursors = (await db._cursors.toArray()).filter((item) => item.channel !== channel);
+    const protectedRows = new Set(otherCursors.flatMap((item) => item.checkpointRows ?? []));
+    await deleteOwnedRows(tables, cursor.checkpointRows ?? [], new Set(replaceEntityTypes), protectedRows);
+    if (metaTable) {
+      const metaKeys = (cursor.checkpointRows ?? [])
+        .filter((key) => !protectedRows.has(key))
+        .map(parseCheckpointEntityKey)
+        .filter(([entityType]) => replaceEntityTypes.includes(entityType))
+        .map(([entityType, entityId]) => `${entityType}:${entityId}`);
+      if (metaKeys.length > 0) await metaTable.bulkDelete(metaKeys);
+    }
+    const remoteHistoryIds = (await db._history.toArray())
+      .filter((row) => row.source === 'remote' && row.channel === channel)
+      .map((row) => row.id);
+    if (remoteHistoryIds.length > 0) await db._history.bulkDelete(remoteHistoryIds);
+    await db._cursors.delete(channel);
   });
 }
 
@@ -186,12 +236,14 @@ function hasMaterializedState(cursor: CursorRow): boolean {
   return Boolean(cursor.checkpointRows?.length || cursor.lastMutationId || cursor.lastReceivedAt);
 }
 
-function assertTrackedChannelIsolation(
+async function assertTrackedChannelIsolation(
   currentCursor: CursorRow | undefined,
   otherCursors: CursorRow[],
   incomingOwnedRows: string[],
   replaceEntityTypes: Set<string>,
-): void {
+  tables: Map<string, Table<Record<string, unknown>, string>>,
+  envelope: CheckpointEnvelope,
+): Promise<void> {
   const untracked = otherCursors.find((cursor) =>
     hasMaterializedState(cursor) && cursor.checkpointRows === undefined);
   if (untracked) {
@@ -215,7 +267,11 @@ function assertTrackedChannelIsolation(
     const owner = otherOwners.get(key);
     if (owner) {
       const [entityType, entityId] = parseCheckpointEntityKey(key);
-      throw new Error(`Checkpoint row ${entityType}/${entityId} is already owned by channel ${owner}`);
+      const incoming = envelope.rows.find((row) => row.entityType === entityType && row.entityId === entityId);
+      const existing = await tables.get(entityType)?.get(entityId);
+      if (!incoming || canonicalJson(existing) !== canonicalJson(normalizeRow(incoming))) {
+        throw new Error(`Checkpoint row ${entityType}/${entityId} conflicts with channel ${owner}`);
+      }
     }
   }
 }
@@ -224,9 +280,11 @@ async function deleteOwnedRows(
   tables: Map<string, Table<Record<string, unknown>, string>>,
   ownedRows: string[],
   replaceEntityTypes: Set<string>,
+  protectedRows: Set<string>,
 ): Promise<void> {
   const idsByType = new Map<string, string[]>();
   for (const key of ownedRows) {
+    if (protectedRows.has(key)) continue;
     const [entityType, entityId] = parseCheckpointEntityKey(key);
     if (!replaceEntityTypes.has(entityType)) continue;
     const ids = idsByType.get(entityType) ?? [];

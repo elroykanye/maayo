@@ -11,6 +11,7 @@ import type {
 import {
   CHECKPOINT_REQUIRED,
   isCheckpointEnvelope,
+  isSnapshotPackManifest,
   isDuplicateMutationError,
   SYSTEM_AUTHOR,
 } from '@maayo/protocol';
@@ -147,7 +148,94 @@ export function maayoRouter(options: MaayoRouterOptions): Router {
     });
   }
 
+  if (options.snapshotPackProvider) {
+    router.get('/snapshot-packs/manifest', async (req, res) => {
+      const identity = await resolveSnapshotPackIdentity(options, req, res);
+      if (!identity) return;
+      const manifest = await options.snapshotPackProvider!.getSnapshotPackManifest({
+        request: req,
+        ...identity,
+        ifNoneMatch: req.header('If-None-Match'),
+      });
+      if (!manifest) {
+        res.status(404).json({ error: `snapshot pack unavailable for channel ${identity.channel}` });
+        return;
+      }
+      if (!isSnapshotPackManifest(manifest)
+        || manifest.identity.tenantId !== identity.tenantId
+        || manifest.identity.channel !== identity.channel
+        || manifest.identity.projectionKey !== identity.projectionKey) {
+        res.status(500).json({ error: 'snapshot pack provider returned a mismatched manifest' });
+        return;
+      }
+      const etag = `"snapshot-pack-${manifest.generation}"`;
+      res.set('ETag', etag);
+      res.set('Cache-Control', 'private, no-cache');
+      res.vary('Authorization');
+      res.vary('Cookie');
+      if (req.header('If-None-Match')?.split(',').map((item) => item.trim()).includes(etag)) {
+        res.status(304).end();
+        return;
+      }
+      res.json(manifest);
+    });
+
+    router.get('/snapshot-packs/chunks/:digest', async (req, res) => {
+      const identity = await resolveSnapshotPackIdentity(options, req, res);
+      if (!identity) return;
+      const digest = req.params['digest'];
+      if (!/^[a-f0-9]{64}$/.test(digest)) {
+        res.status(400).json({ error: 'invalid snapshot chunk digest' });
+        return;
+      }
+      const token = typeof req.query['token'] === 'string' ? req.query['token'] : undefined;
+      if (!token?.trim()) {
+        res.status(401).json({ error: 'snapshot delivery token is required' });
+        return;
+      }
+      const chunk = await options.snapshotPackProvider!.getSnapshotPackChunk({
+        request: req,
+        ...identity,
+        deliveryToken: token,
+      }, digest);
+      if (!chunk || chunk.digest !== digest) {
+        res.status(404).json({ error: 'snapshot chunk not found' });
+        return;
+      }
+      res.set('Cache-Control', 'private, max-age=31536000, immutable');
+      res.set('X-Content-Type-Options', 'nosniff');
+      res.json(chunk);
+    });
+  }
+
   return router;
+}
+
+async function resolveSnapshotPackIdentity(
+  options: MaayoRouterOptions,
+  req: import('express').Request,
+  res: import('express').Response,
+): Promise<{ tenantId: string; channel: string; projectionKey: string } | undefined> {
+  const channel = req.query['channel'];
+  if (typeof channel !== 'string' || !channel.trim()) {
+    res.status(400).json({ error: 'channel is required' });
+    return undefined;
+  }
+  if (options.authorizer && !(await options.authorizer.canPull(req, channel))) {
+    res.status(403).json({ error: `unauthorized for channel ${channel}` });
+    return undefined;
+  }
+  if (!options.snapshotPackTenant || !options.snapshotPackProjectionKey) {
+    res.status(500).json({ error: 'snapshot pack identity resolvers are not configured' });
+    return undefined;
+  }
+  const tenantId = await options.snapshotPackTenant(req, channel);
+  const projectionKey = await options.snapshotPackProjectionKey(req, channel);
+  if (!tenantId.trim() || !projectionKey.trim()) {
+    res.status(500).json({ error: 'snapshot pack identity must not be blank' });
+    return undefined;
+  }
+  return { tenantId, channel, projectionKey };
 }
 
 const gzipAsync = promisify(gzip);

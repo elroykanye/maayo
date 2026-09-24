@@ -21,6 +21,28 @@ export {
   isCheckpointEnvelope,
   isCheckpointRequiredResponse,
 } from './checkpoint';
+export {
+  SNAPSHOT_PACK_PROTOCOL_VERSION,
+  buildSnapshotPack,
+  verifySnapshotPack,
+  snapshotPackCacheKey,
+  isSnapshotPackManifest,
+} from './snapshot-pack';
+export type {
+  SnapshotPackIdentity,
+  SnapshotPackChunk,
+  SnapshotPackChunkReference,
+  SnapshotPackManifest,
+  SnapshotPackPayload,
+  BuiltSnapshotPack,
+  BuildSnapshotPackOptions,
+  SnapshotPackProviderContext,
+  SnapshotPackProvider,
+  SnapshotPackSourceResult,
+  SnapshotPackSource,
+  SnapshotPackStore,
+} from './snapshot-pack';
+export { MemorySnapshotPackStore, SnapshotPackService } from './snapshot-pack';
 export type {
   JsonPrimitive,
   JsonValue,
