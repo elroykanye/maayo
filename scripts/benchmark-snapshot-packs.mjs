@@ -30,7 +30,10 @@ for (const rows of sizes) {
     throughCursor: { lastMutationId: 'benchmark-through', lastReceivedAt: '2026-09-24T00:00:00.000Z' },
   }, {
     rows: Array.from({ length: rows }, (_, index) => row(index)), mergeMetadata: [],
-  }, { maxRowsPerChunk: 2_500, ttlMs: 60 * 60_000 });
+  // The five-sample 1M-row tier can take longer than one hour under
+  // fake-indexeddb. Keep delivery expiry outside the measured workload; expiry
+  // behavior is covered by focused protocol tests.
+  }, { maxRowsPerChunk: 2_500, ttlMs: 24 * 60 * 60_000 });
   const payloadBytes = Buffer.byteLength(JSON.stringify(pack));
   const samples = [];
   let correctness = true;
@@ -66,7 +69,7 @@ for (const rows of sizes) {
     indexedDB.deleteDatabase(dbName);
   }
   samples.sort((a, b) => a - b);
-  reports.push({
+  const report = {
     rows,
     samplesMs: samples.map((value) => Number(value.toFixed(2))),
     p50Ms: Number(percentile(samples, 0.50).toFixed(2)),
@@ -82,7 +85,9 @@ for (const rows of sizes) {
     isolation: 'tenant/projection-bound manifest validated by focused adapter tests',
     integrity,
     outboxPreserved,
-  });
+  };
+  reports.push(report);
+  console.error(`[snapshot-benchmark] completed ${rows} rows: ${JSON.stringify(report)}`);
 }
 console.log(JSON.stringify({ generatedAt: new Date().toISOString(), reports }, null, 2));
 if (reports.some((report) => !report.correctness || !report.integrity || !report.outboxPreserved)) {
