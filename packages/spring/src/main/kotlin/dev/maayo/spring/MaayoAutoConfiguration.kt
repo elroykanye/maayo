@@ -4,6 +4,7 @@ import dev.maayo.spring.api.ChangesController
 import dev.maayo.spring.api.CheckpointController
 import dev.maayo.spring.api.MutationController
 import dev.maayo.spring.api.SchemaController
+import dev.maayo.spring.api.SnapshotPackController
 import dev.maayo.spring.jpa.MaayoJpaAutoConfiguration
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.AutoConfigureAfter
@@ -54,6 +55,30 @@ class MaayoAutoConfiguration {
         projectionResolver: CheckpointProjectionResolver,
         objectMapper: ObjectMapper,
     ) = CheckpointController(checkpointProvider, authorizer, projectionResolver, objectMapper)
+
+    @Bean
+    @ConditionalOnBean(CheckpointProvider::class)
+    @ConditionalOnProperty(prefix = "maayo", name = ["snapshot-signing-key"])
+    fun maayoSnapshotPackService(
+        checkpointProvider: CheckpointProvider,
+        objectMapper: ObjectMapper,
+        properties: MaayoProperties,
+    ) = SnapshotPackService(
+        checkpointProvider,
+        objectMapper,
+        properties.snapshotSigningKey!!,
+        properties.snapshotChunkRows,
+        properties.snapshotTtl.seconds,
+    )
+
+    @Bean
+    @ConditionalOnBean(SnapshotPackService::class, SnapshotTenantResolver::class)
+    fun maayoSnapshotPackController(
+        service: SnapshotPackService,
+        authorizer: ChannelAuthorizer,
+        projectionResolver: CheckpointProjectionResolver,
+        tenantResolver: SnapshotTenantResolver,
+    ) = SnapshotPackController(service, authorizer, projectionResolver, tenantResolver)
 
     /** GET /sync/schema — declared conflict policies (maayo.policies.*). An
      *  empty map serves an empty list; clients treat that as "everything LWW". */

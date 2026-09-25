@@ -33,6 +33,7 @@ export {
   CHECKPOINT_PROTOCOL_VERSION,
   computeCheckpointChecksum,
   installCheckpoint,
+  evictCheckpointChannel,
 } from './checkpoint';
 export type {
   CheckpointEnvelope,
@@ -43,3 +44,25 @@ export type {
 export { ulid, deviceId } from './ids';
 
 export { channelFor, channelsFromGrants } from './channel';
+
+export { WorkingSetRegistry } from './working-set';
+export type {
+  WorkingSetDescriptor,
+  WorkingSetMode,
+  WorkingSetEntry,
+  WorkingSetRegistryOptions,
+} from './working-set';
+
+export {
+  installSnapshotPack,
+  installSnapshotPackFromHttp,
+  MemorySnapshotChunkCache,
+} from './snapshot-pack';
+export type {
+  SnapshotChunkCache,
+  SnapshotPackInstallOptions,
+  SnapshotChunkFetcher,
+  SnapshotPackHttpOptions,
+  SnapshotPackInstallPhase,
+  SnapshotPackInstallPhaseEvent,
+} from './snapshot-pack';

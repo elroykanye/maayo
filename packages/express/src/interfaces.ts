@@ -1,4 +1,8 @@
-import type { CheckpointProvider as ProtocolCheckpointProvider, Mutation } from '@maayo/protocol';
+import type {
+  CheckpointProvider as ProtocolCheckpointProvider,
+  SnapshotPackProvider as ProtocolSnapshotPackProvider,
+  Mutation,
+} from '@maayo/protocol';
 import type { Request } from 'express';
 
 export interface SavedMutation {
@@ -30,6 +34,7 @@ export interface ChannelAuthorizer {
 }
 
 export type CheckpointProvider = ProtocolCheckpointProvider<Request>;
+export type SnapshotPackProvider = ProtocolSnapshotPackProvider<Request>;
 export type CheckpointProjectionKeyResolver = (
   req: Request,
   channel: string,
@@ -39,6 +44,10 @@ interface MaayoRouterBaseOptions {
   store: MaayoStore;
   authorizer?: ChannelAuthorizer;
   defaultLimit?: number;
+  /** Optional Maayo snapshot-pack service. Requires both identity resolvers. */
+  snapshotPackProvider?: SnapshotPackProvider;
+  snapshotPackTenant?: (req: Request, channel: string) => string | Promise<string>;
+  snapshotPackProjectionKey?: CheckpointProjectionKeyResolver;
 }
 
 export type MaayoRouterOptions = MaayoRouterBaseOptions & (

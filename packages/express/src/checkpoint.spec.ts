@@ -4,10 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CHECKPOINT_PROTOCOL_VERSION,
   CHECKPOINT_REQUIRED,
+  buildSnapshotPack,
   type CheckpointEnvelope,
   type Mutation,
 } from '@maayo/protocol';
-import type { CheckpointProvider, MaayoStore, SavedMutation } from './interfaces';
+import type { CheckpointProvider, MaayoStore, SavedMutation, SnapshotPackProvider } from './interfaces';
 import { maayoRouter } from './router';
 
 const servers: Array<{ close: (callback: (error?: Error) => void) => void }> = [];
@@ -107,6 +108,75 @@ describe('maayoRouter checkpoint capability', () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ code: CHECKPOINT_REQUIRED, channel: 'org:abc' });
     expect(store.findChangesByCursor).not.toHaveBeenCalled();
+  });
+
+  it('serves tenant-bound snapshot chunks only with the manifest delivery token', async () => {
+    const built = await buildSnapshotPack({
+      tenantId: 'tenant-a', channel: 'org:abc', projectionKey: 'member:42',
+      projectionRevision: 'grants:7', schemaVersion: '1',
+      throughCursor: { lastMutationId: 'm1', lastReceivedAt: '2026-09-24T00:00:00.000Z' },
+    }, { rows: [], mergeMetadata: [] }, {
+      sign: () => 'short-lived-token',
+      createdAt: '2026-09-24T00:00:00.000Z', expiresAt: '2026-09-25T00:00:00.000Z',
+    });
+    const snapshotPackProvider: SnapshotPackProvider = {
+      getSnapshotPackManifest: vi.fn().mockResolvedValue(built.manifest),
+      getSnapshotPackChunk: vi.fn(async (context, digest) =>
+        context.tenantId === 'tenant-a' && context.deliveryToken === 'short-lived-token'
+          ? built.chunks.find((chunk) => chunk.digest === digest) ?? null
+          : null),
+    };
+    const baseUrl = await startServer({
+      store: makeStore(), snapshotPackProvider,
+      snapshotPackTenant: () => 'tenant-a', snapshotPackProjectionKey: () => 'member:42',
+    });
+    const manifest = await fetch(`${baseUrl}/sync/snapshot-packs/manifest?channel=org%3Aabc`);
+    expect(manifest.status).toBe(200);
+    const digest = built.manifest.chunks[0].digest;
+    expect((await fetch(`${baseUrl}/sync/snapshot-packs/chunks/${digest}?channel=org%3Aabc`)).status).toBe(401);
+    const chunk = await fetch(
+      `${baseUrl}/sync/snapshot-packs/chunks/${digest}?channel=org%3Aabc&token=short-lived-token`,
+    );
+    expect(chunk.status).toBe(200);
+    expect((await chunk.json()).digest).toBe(digest);
+  });
+
+  it.each([
+    ['gzip', gunzipSync],
+    ['br', brotliDecompressSync],
+  ] as const)('serves immutable snapshot chunks with negotiated %s compression', async (encoding, decompress) => {
+    const built = await buildSnapshotPack({
+      tenantId: 'tenant-a', channel: 'org:abc', projectionKey: 'member:42',
+      projectionRevision: 'grants:7', schemaVersion: '1',
+      throughCursor: { lastMutationId: 'm1', lastReceivedAt: '2026-09-24T00:00:00.000Z' },
+    }, {
+      rows: Array.from({ length: 100 }, (_, index) => ({
+        entityType: 'Student', entityId: `s-${index}`, payload: { id: `s-${index}`, status: 'active' },
+      })),
+      mergeMetadata: [],
+    }, {
+      sign: () => 'short-lived-token',
+      createdAt: '2026-09-24T00:00:00.000Z', expiresAt: '2026-09-25T00:00:00.000Z',
+    });
+    const snapshotPackProvider: SnapshotPackProvider = {
+      getSnapshotPackManifest: vi.fn().mockResolvedValue(built.manifest),
+      getSnapshotPackChunk: vi.fn().mockResolvedValue(built.chunks[0]),
+    };
+    const baseUrl = await startServer({
+      store: makeStore(), snapshotPackProvider,
+      snapshotPackTenant: () => 'tenant-a', snapshotPackProjectionKey: () => 'member:42',
+    });
+    const digest = built.manifest.chunks[0].digest;
+
+    const raw = await rawGet(
+      `${baseUrl}/sync/snapshot-packs/chunks/${digest}?channel=org%3Aabc&token=short-lived-token`,
+      { 'accept-encoding': encoding },
+    );
+
+    expect(raw.status).toBe(200);
+    expect(raw.headers['content-encoding']).toBe(encoding);
+    expect(raw.headers.vary).toContain('Accept-Encoding');
+    expect(JSON.parse(decompress(raw.body).toString('utf8'))).toEqual(built.chunks[0]);
   });
 });
 

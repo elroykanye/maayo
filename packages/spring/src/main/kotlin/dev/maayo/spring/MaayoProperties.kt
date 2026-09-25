@@ -1,6 +1,7 @@
 package dev.maayo.spring
 
 import org.springframework.boot.context.properties.ConfigurationProperties
+import java.time.Duration
 
 @ConfigurationProperties(prefix = "maayo")
 data class MaayoProperties(
@@ -16,4 +17,10 @@ data class MaayoProperties(
      * The endpoint is omitted while this map is empty.
      */
     val policies: Map<String, String> = emptyMap(),
+    /** HMAC key for short-lived snapshot-pack chunk delivery tokens. */
+    val snapshotSigningKey: String? = null,
+    /** Maximum materialized rows per immutable snapshot chunk. */
+    val snapshotChunkRows: Int = 1_000,
+    /** Validity window for a generated snapshot manifest and its delivery token. */
+    val snapshotTtl: Duration = Duration.ofMinutes(5),
 )

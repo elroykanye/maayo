@@ -1,4 +1,8 @@
-import type { CheckpointProvider as ProtocolCheckpointProvider, Mutation } from '@maayo/protocol';
+import type {
+  CheckpointProvider as ProtocolCheckpointProvider,
+  SnapshotPackProvider as ProtocolSnapshotPackProvider,
+  Mutation,
+} from '@maayo/protocol';
 
 export interface SavedMutation {
   mutation: Mutation;
@@ -27,6 +31,7 @@ export interface ChannelAuthorizer {
 }
 
 export type CheckpointProvider = ProtocolCheckpointProvider<unknown>;
+export type SnapshotPackProvider = ProtocolSnapshotPackProvider<unknown>;
 export type CheckpointProjectionKeyResolver = (
   request: unknown,
   channel: string,

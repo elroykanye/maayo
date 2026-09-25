@@ -7,4 +7,5 @@ export type {
   SavedMutation,
   CheckpointProvider,
   CheckpointProjectionKeyResolver,
+  SnapshotPackProvider,
 } from './interfaces';

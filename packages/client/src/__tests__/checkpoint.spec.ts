@@ -229,8 +229,34 @@ describe('checkpoint install', () => {
     await expect(installCheckpoint(db, collision, {
       expectedChannel: 'org:1', expectedProjectionKey: 'projection:org:1',
       supportedSchemaVersion: '1', replaceEntityTypes: ['Student'],
-    })).rejects.toThrow(/owned by channel org:2/);
+    })).rejects.toThrow(/conflicts with channel org:2/);
     expect(await db.table('Student').get('two')).toMatchObject({ channel: 'org:2' });
+  });
+
+  it('keeps an overlapping row until its final working set releases ownership', async () => {
+    for (const channel of ['org:1', 'org:2']) {
+      await installCheckpoint(db, await checkpoint({
+        channel,
+        projectionKey: `projection:${channel}`,
+        rows: [{ entityType: 'Student', entityId: 'shared', payload: { id: 'shared', name: 'Shared' } }],
+        mergeMetadata: [],
+      }), {
+        expectedChannel: channel,
+        expectedProjectionKey: `projection:${channel}`,
+        supportedSchemaVersion: '1',
+        replaceEntityTypes: ['Student'],
+      });
+    }
+
+    await installCheckpoint(db, await checkpoint({
+      channel: 'org:1', projectionKey: 'projection:org:1', rows: [], mergeMetadata: [],
+    }), {
+      expectedChannel: 'org:1', expectedProjectionKey: 'projection:org:1',
+      supportedSchemaVersion: '1', replaceEntityTypes: ['Student'],
+    });
+
+    expect(await db.table('Student').get('shared')).toMatchObject({ name: 'Shared' });
+    expect((await db._cursors.get('org:2'))?.checkpointRows).toHaveLength(1);
   });
 
   it('restores the previous replica and cursor after a checkpoint write fails and the database reopens', async () => {
@@ -278,6 +304,22 @@ describe('checkpoint install', () => {
     }, { remoteHistoryLimit: 0 });
 
     expect(await db.table('Student').get('s-1')).toMatchObject({ name: 'Winner' });
+  });
+
+  it('stores LWW winners only in the configured metadata table', async () => {
+    const envelope = await checkpoint({
+      mergeMetadata: [{
+        entityType: 'Student', entityId: 's-1',
+        value: { policy: 'LWW', clientTs: '2026-09-01T00:00:00.000Z', deviceId: 'd-1', mutationId: 'winner-1' },
+      }],
+    });
+    await installCheckpoint(db, envelope, {
+      expectedChannel: 'org:1', expectedProjectionKey: 'role:teacher:v3',
+      supportedSchemaVersion: '1', replaceEntityTypes: ['Student'], metaTable: '_syncmeta',
+    });
+
+    expect(await db.table('_syncmeta').get('Student:s-1')).toMatchObject({ mutationId: 'winner-1' });
+    expect((await db._cursors.get('org:1'))?.lwwWinners).toBeUndefined();
   });
 
   it.each([

@@ -13,10 +13,12 @@ import { TabCoordinator } from './leader';
 import { fetchWithTimeout } from './transport';
 import {
   CHECKPOINT_PROTOCOL_VERSION,
+  evictCheckpointChannel,
   installCheckpoint,
   type CheckpointEnvelope,
   type CheckpointInstallOptions,
 } from './checkpoint';
+import { WorkingSetRegistry, type WorkingSetDescriptor } from './working-set';
 
 export type SyncPhase =
   | 'auth'
@@ -58,6 +60,8 @@ export interface SyncConfig {
   dbName: string;
   /** Channels this client pulls from */
   channels: string[];
+  /** Optional lazy working sets. Legacy static channels remain supported. */
+  workingSets?: readonly WorkingSetDescriptor[];
   /** Extra IndexedDB table schemas for user data */
   tables?: UserTableSchema;
   /** Data and schema migrations to run when the local DB version bumps */
@@ -119,6 +123,7 @@ export type SyncStatus = 'idle' | 'syncing' | 'error' | 'offline';
 
 export class SyncEngine {
   readonly db: MaayoDatabase;
+  readonly workingSets: WorkingSetRegistry;
   private _status: SyncStatus = 'idle';
   private _intervalId: ReturnType<typeof setInterval> | null = null;
   private _statusListeners = new Set<(s: SyncStatus) => void>();
@@ -131,7 +136,36 @@ export class SyncEngine {
   constructor(private readonly config: SyncConfig) {
     this.db = openDatabase(config.dbName, config.tables, config.migrations);
     this._coordinator = new TabCoordinator(config.dbName);
+    this.workingSets = new WorkingSetRegistry({
+      evict: async (descriptor) => {
+        const checkpoint = this.config.checkpoint;
+        if (!checkpoint) throw new Error('Working-set eviction requires checkpoint configuration');
+        await evictCheckpointChannel(
+          this.db,
+          descriptor.channel,
+          checkpoint.replaceEntityTypes,
+          checkpoint.metaTable,
+        );
+      },
+      onChange: () => { if (this._started) void this.sync(); },
+    });
+    for (const descriptor of config.workingSets ?? []) this.subscribe(descriptor);
   }
+
+  subscribe(descriptor: WorkingSetDescriptor): void {
+    this.assertCompatibleWorkingSet(descriptor);
+    this.workingSets.subscribe(descriptor);
+  }
+
+  prefetch(descriptor: WorkingSetDescriptor): void {
+    this.assertCompatibleWorkingSet(descriptor);
+    this.workingSets.prefetch(descriptor);
+  }
+
+  activate(id: string): void { this.workingSets.activate(id); }
+  pause(id: string): void { this.workingSets.pause(id); }
+  unsubscribe(id: string): void { this.workingSets.unsubscribe(id); }
+  evict(id: string): Promise<void> { return this.workingSets.evict(id); }
 
   get status(): SyncStatus {
     return this._status;
@@ -337,13 +371,23 @@ export class SyncEngine {
    */
   private async _pullAll(signal: AbortSignal): Promise<void> {
     const headers = await this._headers();
+    const dynamic = [...this.workingSets.active(), ...this.workingSets.prefetchable()];
+    const targetMap = new Map<string, { channel: string; descriptor?: WorkingSetDescriptor }>();
+    for (const target of [
+      ...this.config.channels.map((channel) => ({ channel, descriptor: undefined })),
+      ...dynamic.map((descriptor) => ({ channel: descriptor.channel, descriptor })),
+    ]) targetMap.set(target.channel, target);
+    const targets = [...targetMap.values()];
     await Promise.all(
-      this.config.channels.map(async (channel) => {
-        await this._installCheckpointIfUseful(channel, headers, signal, 'fresh');
+      targets.map(async ({ channel, descriptor }) => {
+        await this._installCheckpointIfUseful(channel, headers, signal, 'fresh', descriptor);
         let hasMore = true;
         while (hasMore) {
-          const result = await this._pullOnePage(channel, headers, signal);
+          const result = await this._pullOnePage(channel, headers, signal, descriptor);
           hasMore = result.hasMore;
+        }
+        if (descriptor && this.workingSets.prefetchable().some((item) => item.id === descriptor.id)) {
+          this.workingSets.pause(descriptor.id);
         }
       }),
     );
@@ -353,6 +397,7 @@ export class SyncEngine {
     channel: string,
     headers: Record<string, string>,
     signal: AbortSignal,
+    descriptor?: WorkingSetDescriptor,
   ): ReturnType<typeof pull> {
     const start = performance.now();
     this._emitTelemetry({ phase: 'pull', channel, status: 'start' });
@@ -380,8 +425,8 @@ export class SyncEngine {
       return result;
     } catch (error) {
       if (error instanceof CheckpointRequiredError && this.config.checkpoint) {
-        await this._installCheckpointIfUseful(channel, headers, signal, 'required');
-        return this._pullOnePage(channel, headers, signal);
+        await this._installCheckpointIfUseful(channel, headers, signal, 'required', descriptor);
+        return this._pullOnePage(channel, headers, signal, descriptor);
       }
       this._emitTelemetry({
         phase: 'pull',
@@ -398,6 +443,7 @@ export class SyncEngine {
     headers: Record<string, string>,
     signal: AbortSignal,
     reason: 'fresh' | 'required',
+    descriptor?: WorkingSetDescriptor,
   ): Promise<void> {
     const config = this.config.checkpoint;
     if (!config) return;
@@ -407,7 +453,7 @@ export class SyncEngine {
       return;
     }
 
-    const projectionKey = await this._checkpointProjectionKey(channel, config);
+    const projectionKey = descriptor?.projectionKey ?? await this._checkpointProjectionKey(channel, config);
     const url = new URL(`${this.config.baseUrl}/sync/checkpoint`);
     url.searchParams.set('channel', channel);
     const etag = reason === 'required'
@@ -465,6 +511,7 @@ export class SyncEngine {
       ...config,
       expectedChannel: channel,
       expectedProjectionKey: projectionKey,
+      expectedProjectionRevision: descriptor?.projectionRevision ?? config.expectedProjectionRevision,
       supportedProtocolVersion: CHECKPOINT_PROTOCOL_VERSION,
     });
     signal.throwIfAborted();
@@ -484,6 +531,19 @@ export class SyncEngine {
       entities: new Set(envelope.rows.map((row) => `${row.entityType}\u0000${row.entityId}`)).size,
       elapsedMs: performance.now() - start,
     });
+  }
+
+  private assertCompatibleWorkingSet(descriptor: WorkingSetDescriptor): void {
+    if (this.config.channels.includes(descriptor.channel)) {
+      throw new Error(`Working set channel ${descriptor.channel} is already configured as a legacy static channel`);
+    }
+    const conflict = this.workingSets.all().find((entry) =>
+      entry.descriptor.id !== descriptor.id
+      && entry.descriptor.channel === descriptor.channel
+      && (entry.descriptor.tenantId !== descriptor.tenantId
+        || entry.descriptor.projectionKey !== descriptor.projectionKey
+        || entry.descriptor.projectionRevision !== descriptor.projectionRevision));
+    if (conflict) throw new Error(`Working set channel ${descriptor.channel} has a conflicting projection identity`);
   }
 
   private async _checkpointProjectionKey(channel: string, config: CheckpointSyncConfig): Promise<string> {
