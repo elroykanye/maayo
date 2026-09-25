@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,6 +56,20 @@ try {
       `  ${JSON.stringify(name)}: ${JSON.stringify(spec)}`),
   ].join('\n'));
   runPnpm(['install'], consumerDir);
+
+  const installedManifest = (name) => JSON.parse(readFileSync(
+    join(consumerDir, 'node_modules', ...name.split('/'), 'package.json'),
+    'utf8',
+  ));
+  const angularManifest = installedManifest('@maayo/angular');
+  const clientManifest = installedManifest('@maayo/client');
+  const protocolManifest = installedManifest('@maayo/protocol');
+  if (angularManifest.dependencies?.['@maayo/client'] !== clientManifest.version) {
+    throw new Error(`Packed Angular depends on client ${angularManifest.dependencies?.['@maayo/client']}; expected ${clientManifest.version}`);
+  }
+  if (angularManifest.dependencies?.['@maayo/protocol'] !== protocolManifest.version) {
+    throw new Error(`Packed Angular depends on protocol ${angularManifest.dependencies?.['@maayo/protocol']}; expected ${protocolManifest.version}`);
+  }
 
   const requireFromConsumer = createRequire(join(consumerDir, 'commonjs-consumer.cjs'));
   for (const packageName of packageNames) {
