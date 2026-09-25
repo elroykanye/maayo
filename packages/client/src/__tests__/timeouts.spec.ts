@@ -162,42 +162,87 @@ describe('SyncEngine request deadlines', () => {
     expect(engine.status).toBe('idle');
   });
 
-  it('stop aborts a stalled response body and allows a later manual retry', async () => {
+  it('stop cancels an in-flight pull and fences queued sync before the database closes', async () => {
+    const telemetry: Array<{ status: string }> = [];
     const engine = new SyncEngine({
       baseUrl: 'http://test',
       dbName: `test-stop-body-${crypto.randomUUID()}`,
-      channels: [],
+      channels: ['org:1'],
       requestTimeoutMs: 60_000,
-    });
-    const row = await enqueue(engine.db, {
-      channel: 'org:1',
-      entityType: 'Student',
-      entityId: 'student-stop',
-      op: 'CREATE',
-      payload: {},
-      authorIdentityId: 'user-1',
+      intervalMs: 60_000,
+      onTelemetry: (event) => telemetry.push(event),
     });
     const fetch = stalledBodyFetch({
-      accepted: [{ id: row.id, receivedAt: '2026-09-02T00:00:00.000Z' }],
-      rejected: [],
+      channel: 'org:1',
+      mutations: [],
+      hasMore: false,
+      cursor: { lastMutationId: null, lastReceivedAt: null },
     });
     (globalThis as Record<string, unknown>).fetch = fetch;
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const sync = engine.sync();
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     engine.stop();
-    expect(await settlesWithin(sync)).toBe(true);
-    expect(await settlesWithin(engine.waitForIdle())).toBe(true);
-
-    (globalThis as Record<string, unknown>).fetch = vi.fn(async () => ({
+    const retryFetch = vi.fn(async () => ({
       ok: true,
       json: async () => ({
-        accepted: [{ id: row.id, receivedAt: '2026-09-02T00:00:00.000Z' }],
-        rejected: [],
+        channel: 'org:1',
+        mutations: [],
+        hasMore: false,
+        cursor: { lastMutationId: null, lastReceivedAt: null },
       }),
     }) as Response);
-    expect(await settlesWithin(engine.sync())).toBe(true);
+    (globalThis as Record<string, unknown>).fetch = retryFetch;
+    const queuedSync = engine.waitForIdle().then(() => engine.sync());
+
+    expect(await settlesWithin(sync)).toBe(true);
+    expect(await settlesWithin(queuedSync)).toBe(true);
+    expect(await settlesWithin(engine.waitForIdle())).toBe(true);
     expect(engine.status).toBe('idle');
+    expect(error).not.toHaveBeenCalled();
+    expect(telemetry).not.toContainEqual(expect.objectContaining({ status: 'error' }));
+    expect(retryFetch).not.toHaveBeenCalled();
+
+    engine.db.close();
+    await engine.sync();
+    expect(retryFetch).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('offers syncOnce for stopped one-shot work and start explicitly lifts the fence', async () => {
+    const engine = new SyncEngine({
+      baseUrl: 'http://test',
+      dbName: `test-stop-manual-${crypto.randomUUID()}`,
+      channels: ['org:1'],
+      intervalMs: 60_000,
+    });
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        channel: 'org:1',
+        mutations: [],
+        hasMore: false,
+        cursor: { lastMutationId: null, lastReceivedAt: null },
+      }),
+    }) as Response);
+    (globalThis as Record<string, unknown>).fetch = fetch;
+
+    engine.stop();
+    await engine.sync();
+    expect(fetch).not.toHaveBeenCalled();
+
+    await engine.syncOnce();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(engine.status).toBe('idle');
+
+    await engine.sync();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    engine.start();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await engine.waitForIdle();
+    engine.stop();
+    engine.db.close();
   });
 });

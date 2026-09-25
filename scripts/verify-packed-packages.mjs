@@ -63,6 +63,9 @@ try {
     if (!required || Object.keys(required).length === 0) {
       throw new Error(`${packageName} exposed no CommonJS exports`);
     }
+    if (packageName === '@maayo/client' && typeof required.SyncEngine?.prototype.syncOnce !== 'function') {
+      throw new Error('@maayo/client exposed no CommonJS syncOnce API');
+    }
   }
 
   const esmCheck = join(consumerDir, 'esm-consumer.mjs');
@@ -71,6 +74,7 @@ try {
     ...packageNames.map((name, index) => `import * as package${index} from ${JSON.stringify(name)};`),
     ...packageNames.map((name, index) =>
       `if (Object.keys(package${index}).length === 0) throw new Error(${JSON.stringify(`${name} exposed no ESM exports`)});`),
+    "if (typeof package1.SyncEngine?.prototype.syncOnce !== 'function') throw new Error('@maayo/client exposed no ESM syncOnce API');",
     "const require = createRequire(import.meta.url);",
     "const cjsProtocol = require('@maayo/protocol');",
     "const cjsError = new cjsProtocol.DuplicateMutationError();",

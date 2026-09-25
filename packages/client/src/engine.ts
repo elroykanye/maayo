@@ -129,6 +129,7 @@ export class SyncEngine {
   private _statusListeners = new Set<(s: SyncStatus) => void>();
   private _coordinator: TabCoordinator;
   private _started = false;
+  private _stopped = false;
   private _syncInFlight: Promise<void> | null = null;
   private _syncAbortController: AbortController | null = null;
   private _activeBudgetMs: number | undefined;
@@ -178,6 +179,8 @@ export class SyncEngine {
 
   start(): void {
     if (this._started) return;
+    if (this._stopped) this._coordinator = new TabCoordinator(this.config.dbName);
+    this._stopped = false;
     this._started = true;
     // Follower tabs receive status from the leader via BroadcastChannel
     this._coordinator.onStatus((s) => {
@@ -194,6 +197,7 @@ export class SyncEngine {
   }
 
   stop(): void {
+    this._stopped = true;
     this._started = false;
     if (this._intervalId !== null) {
       clearInterval(this._intervalId);
@@ -243,13 +247,24 @@ export class SyncEngine {
   }
 
   /**
-   * Runs one push+pull cycle. Concurrent callers (the interval timer, a manual trigger, and a
-   * consumer's own reactive re-trigger can all land in the same tick) share the SAME in-flight
-   * run rather than each starting an independent one — otherwise two overlapping cycles issue
-   * their pull requests concurrently against the same local DB for no benefit, doubling
-   * in-flight requests right when a fresh session's first sync is already slowest.
+   * Runs one lifecycle-managed push+pull cycle. After `stop()`, calls are fenced until `start()`
+   * explicitly restarts the engine. Concurrent callers share the same in-flight run.
    */
   async sync(): Promise<void> {
+    if (this._stopped) return;
+    return this._syncOnce();
+  }
+
+  /**
+   * Runs an explicit one-shot push+pull cycle even while the managed engine is stopped. Consumers
+   * must keep the database open until this promise settles (or call `waitForIdle()` before closing
+   * it). Concurrent one-shot and managed callers still share the same in-flight run.
+   */
+  async syncOnce(): Promise<void> {
+    return this._syncOnce();
+  }
+
+  private async _syncOnce(): Promise<void> {
     if (this._syncInFlight) return this._syncInFlight;
     const controller = new AbortController();
     const hardBudgetMs = normalizeHardBudget(this.config.checkpoint?.hardBudgetMs);
@@ -276,6 +291,10 @@ export class SyncEngine {
       await purgeSynced(this.db);
       this._setStatus('idle');
     } catch (err) {
+      if (isStopCancellation(err, signal)) {
+        this._setStatus('idle');
+        return;
+      }
       console.error('[maayo] sync error', err);
       if (err instanceof SyncHttpError && (err.status === 401 || err.status === 403) && this.config.onAuthError) {
         try {
@@ -428,6 +447,7 @@ export class SyncEngine {
         await this._installCheckpointIfUseful(channel, headers, signal, 'required', descriptor);
         return this._pullOnePage(channel, headers, signal, descriptor);
       }
+      if (isStopCancellation(error, signal)) throw error;
       this._emitTelemetry({
         phase: 'pull',
         channel,
@@ -596,6 +616,20 @@ export class SyncEngine {
       console.error('[maayo] onTelemetry callback failed', err);
     }
   }
+}
+
+function isStopCancellation(error: unknown, signal: AbortSignal): boolean {
+  if (!signal.aborted || !isAbortError(signal.reason) || signal.reason.message !== 'Sync stopped') {
+    return false;
+  }
+  return error === signal.reason || isAbortError(error);
+}
+
+function isAbortError(value: unknown): value is { name: string; message: string } {
+  return typeof value === 'object'
+    && value !== null
+    && (value as { name?: unknown }).name === 'AbortError'
+    && typeof (value as { message?: unknown }).message === 'string';
 }
 
 function normalizeHardBudget(value: number | undefined): number | undefined {
